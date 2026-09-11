@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node. No API key, no account, macOS 26+ on Apple Silicon.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jagdishpal02000/apple-llm.git",
+    "directory": "packages/node"
+  },
+  "homepage": "https://github.com/jagdishpal02000/apple-llm#readme",
+  "bugs": {
+    "url": "https://github.com/jagdishpal02000/apple-llm/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -20,14 +29,22 @@
   "files": [
     "dist",
     "swift",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
   },
   "keywords": [
-    "apple", "llm", "foundation-models", "on-device", "private-cloud-compute",
-    "apple-intelligence", "macos", "local-llm", "structured-output"
+    "apple",
+    "llm",
+    "foundation-models",
+    "on-device",
+    "private-cloud-compute",
+    "apple-intelligence",
+    "macos",
+    "local-llm",
+    "structured-output"
   ],
   "scripts": {
     "build": "node ../../scripts/embed-helper.mjs && tsup",
