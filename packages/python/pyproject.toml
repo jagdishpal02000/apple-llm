@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apple-llm"
+version = "0.1.0"
+description = "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Python. No API key, no account, macOS 26+ on Apple Silicon."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["apple", "llm", "foundation-models", "on-device", "private-cloud-compute",
+            "apple-intelligence", "macos", "local-llm", "structured-output"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# No runtime dependencies. The wheel is pure Python and has no build step, so
+# installing on Linux or an Intel Mac always succeeds; probe() reports why the
+# model is unavailable there rather than failing at install time.
+dependencies = []
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+dev = ["pytest>=7", "pydantic>=2"]
+
+[project.scripts]
+apple-llm = "apple_llm.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The Swift helper ships as package data and is compiled on first use, never at
+# install time. It must stay byte-identical to swift/helper.swift at the repo
+# root; tests/test_drift.py asserts that.
+apple_llm = ["swift/*.swift"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

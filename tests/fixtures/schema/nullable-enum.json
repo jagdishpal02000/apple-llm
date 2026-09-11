@@ -1,0 +1,43 @@
+{
+  "name": "nullable-enum",
+  "why": "A null member of an enum is dropped and recorded as optionality, matching rule 1.",
+  "input": {
+    "type": "object",
+    "required": [
+      "mode"
+    ],
+    "properties": {
+      "mode": {
+        "enum": [
+          "fast",
+          "slow",
+          null
+        ]
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "fast"
+          },
+          {
+            "type": "string",
+            "const": "slow"
+          }
+        ],
+        "title": "mode"
+      }
+    },
+    "required": [],
+    "x-order": [
+      "mode"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

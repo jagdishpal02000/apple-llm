@@ -1,0 +1,35 @@
+{
+  "name": "enum-numbers",
+  "why": "Rule 3 with numeric members: branches are typed number, not string.",
+  "input": {
+    "type": "object",
+    "required": [
+      "status"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          200,
+          404,
+          500
+        ]
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "x-order": [
+      "status"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

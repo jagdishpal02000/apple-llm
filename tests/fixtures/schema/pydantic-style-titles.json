@@ -1,0 +1,84 @@
+{
+  "name": "pydantic-style-titles",
+  "why": "Rule 8: pydantic's model_json_schema() titles every property, and a titled string is rejected as a 'named string type' needing an enum. Titles survive on other types.",
+  "input": {
+    "type": "object",
+    "title": "Person",
+    "required": [
+      "name",
+      "born",
+      "score",
+      "active",
+      "tags"
+    ],
+    "properties": {
+      "name": {
+        "type": "string",
+        "title": "Name"
+      },
+      "born": {
+        "type": "integer",
+        "title": "Born"
+      },
+      "score": {
+        "type": "number",
+        "title": "Score"
+      },
+      "active": {
+        "type": "boolean",
+        "title": "Active"
+      },
+      "tags": {
+        "type": "array",
+        "title": "Tags",
+        "items": {
+          "type": "string",
+          "title": "Tag"
+        }
+      }
+    }
+  },
+  "expected": {
+    "title": "Person",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "born": {
+        "title": "Born",
+        "type": "integer"
+      },
+      "score": {
+        "title": "Score",
+        "type": "number"
+      },
+      "active": {
+        "title": "Active",
+        "type": "boolean"
+      },
+      "tags": {
+        "title": "Tags",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "name",
+      "born",
+      "score",
+      "active",
+      "tags"
+    ],
+    "x-order": [
+      "name",
+      "born",
+      "score",
+      "active",
+      "tags"
+    ],
+    "additionalProperties": false
+  }
+}

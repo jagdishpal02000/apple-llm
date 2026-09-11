@@ -1,0 +1,42 @@
+{
+  "name": "multi-type-union",
+  "why": "Rule 1: a genuine multi-type union becomes anyOf. Collapsing it to one branch makes the others unreachable under constrained decoding.",
+  "input": {
+    "type": "object",
+    "required": [
+      "status"
+    ],
+    "properties": {
+      "status": {
+        "type": [
+          "number",
+          "string"
+        ]
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "title": "status"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "x-order": [
+      "status"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

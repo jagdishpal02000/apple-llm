@@ -1,0 +1,36 @@
+{
+  "name": "object-without-properties",
+  "why": "An object with no properties still needs title, x-order and additionalProperties (rules 2, 4, 5).",
+  "input": {
+    "type": "object",
+    "required": [
+      "meta"
+    ],
+    "properties": {
+      "meta": {
+        "type": "object"
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "meta": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "x-order": [],
+        "title": "meta",
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "meta"
+    ],
+    "x-order": [
+      "meta"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

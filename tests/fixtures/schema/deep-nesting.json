@@ -1,0 +1,96 @@
+{
+  "name": "deep-nesting",
+  "why": "Nesting through arrays and objects together, which is where x-order is easiest to miss.",
+  "input": {
+    "type": "object",
+    "required": [
+      "groups"
+    ],
+    "properties": {
+      "groups": {
+        "type": "array",
+        "maxItems": 4,
+        "items": {
+          "type": "object",
+          "required": [
+            "label",
+            "items"
+          ],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "k"
+                ],
+                "properties": {
+                  "k": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "groups": {
+        "maxItems": 4,
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "type": "object",
+                "properties": {
+                  "k": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "k"
+                ],
+                "x-order": [
+                  "k"
+                ],
+                "title": "items",
+                "additionalProperties": false
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "label",
+            "items"
+          ],
+          "x-order": [
+            "label",
+            "items"
+          ],
+          "title": "groups",
+          "additionalProperties": false
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "groups"
+    ],
+    "x-order": [
+      "groups"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "name": "ref-name-sanitized",
+  "why": "A $defs key that is not a legal title is sanitized, and the $ref is rewritten to match — otherwise it would resolve to nothing, silently.",
+  "input": {
+    "type": "object",
+    "required": [
+      "item"
+    ],
+    "properties": {
+      "item": {
+        "$ref": "#/$defs/my-param"
+      }
+    },
+    "$defs": {
+      "my-param": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "$defs": {
+      "my-param": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "x-order": [
+          "name"
+        ],
+        "title": "myparam",
+        "additionalProperties": false
+      }
+    },
+    "type": "object",
+    "properties": {
+      "item": {
+        "$ref": "#/$defs/myparam"
+      }
+    },
+    "required": [
+      "item"
+    ],
+    "x-order": [
+      "item"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

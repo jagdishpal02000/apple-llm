@@ -1,0 +1,54 @@
+{
+  "name": "enum-strings",
+  "why": "Rule 3: a string enum becomes anyOf of const branches, and the anyOf needs a title.",
+  "input": {
+    "type": "object",
+    "required": [
+      "location"
+    ],
+    "properties": {
+      "location": {
+        "enum": [
+          "path",
+          "query",
+          "header",
+          "cookie"
+        ]
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "location": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "path"
+          },
+          {
+            "type": "string",
+            "const": "query"
+          },
+          {
+            "type": "string",
+            "const": "header"
+          },
+          {
+            "type": "string",
+            "const": "cookie"
+          }
+        ],
+        "title": "location"
+      }
+    },
+    "required": [
+      "location"
+    ],
+    "x-order": [
+      "location"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

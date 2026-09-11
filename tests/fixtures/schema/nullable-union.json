@@ -1,0 +1,42 @@
+{
+  "name": "nullable-union",
+  "why": "Rule 1: ['string','null'] becomes a plain string that is simply not required.",
+  "input": {
+    "type": "object",
+    "required": [
+      "summary",
+      "auth"
+    ],
+    "properties": {
+      "summary": {
+        "type": "string"
+      },
+      "auth": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "summary": {
+        "type": "string"
+      },
+      "auth": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "summary"
+    ],
+    "x-order": [
+      "summary",
+      "auth"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

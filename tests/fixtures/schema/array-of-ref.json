@@ -1,0 +1,92 @@
+{
+  "name": "array-of-ref",
+  "why": "Arrays of $ref pass through; maxItems is honoured by Apple and bounds runaway generation.",
+  "input": {
+    "type": "object",
+    "required": [
+      "params"
+    ],
+    "properties": {
+      "params": {
+        "type": "array",
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/$defs/param"
+        }
+      }
+    },
+    "$defs": {
+      "param": {
+        "type": "object",
+        "required": [
+          "name",
+          "in"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "in": {
+            "enum": [
+              "path",
+              "query"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "$defs": {
+      "param": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "in": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "path"
+              },
+              {
+                "type": "string",
+                "const": "query"
+              }
+            ],
+            "title": "in"
+          }
+        },
+        "required": [
+          "name",
+          "in"
+        ],
+        "x-order": [
+          "name",
+          "in"
+        ],
+        "title": "param",
+        "additionalProperties": false
+      }
+    },
+    "type": "object",
+    "properties": {
+      "params": {
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/$defs/param"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "params"
+    ],
+    "x-order": [
+      "params"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

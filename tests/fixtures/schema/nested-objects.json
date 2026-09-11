@@ -1,0 +1,68 @@
+{
+  "name": "nested-objects",
+  "why": "Rule 2/4/5 on a nested object: the inner object needs its own title, x-order and additionalProperties.",
+  "input": {
+    "type": "object",
+    "required": [
+      "id",
+      "address"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "address": {
+        "type": "object",
+        "required": [
+          "city"
+        ],
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "address": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "x-order": [
+          "city",
+          "zip"
+        ],
+        "title": "address",
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "id",
+      "address"
+    ],
+    "x-order": [
+      "id",
+      "address"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

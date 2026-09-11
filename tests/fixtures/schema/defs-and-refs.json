@@ -1,0 +1,62 @@
+{
+  "name": "defs-and-refs",
+  "why": "Rule 4: $ref resolves by title, so each $def is titled with its own key.",
+  "input": {
+    "type": "object",
+    "required": [
+      "primary"
+    ],
+    "properties": {
+      "primary": {
+        "$ref": "#/$defs/param"
+      }
+    },
+    "$defs": {
+      "param": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "$defs": {
+      "param": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "x-order": [
+          "name"
+        ],
+        "title": "param",
+        "additionalProperties": false
+      }
+    },
+    "type": "object",
+    "properties": {
+      "primary": {
+        "$ref": "#/$defs/param"
+      }
+    },
+    "required": [
+      "primary"
+    ],
+    "x-order": [
+      "primary"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

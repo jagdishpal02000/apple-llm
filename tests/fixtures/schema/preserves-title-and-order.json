@@ -1,0 +1,46 @@
+{
+  "name": "preserves-title-and-order",
+  "why": "A schema already carrying title and x-order keeps them; conversion is idempotent on its own output.",
+  "input": {
+    "type": "object",
+    "title": "Endpoint",
+    "x-order": [
+      "b",
+      "a"
+    ],
+    "additionalProperties": false,
+    "required": [
+      "a",
+      "b"
+    ],
+    "properties": {
+      "a": {
+        "type": "string"
+      },
+      "b": {
+        "type": "string"
+      }
+    }
+  },
+  "expected": {
+    "title": "Endpoint",
+    "x-order": [
+      "b",
+      "a"
+    ],
+    "additionalProperties": false,
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "string"
+      },
+      "b": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "a",
+      "b"
+    ]
+  }
+}
