@@ -24,7 +24,7 @@
     }
   },
   "bin": {
-    "apple-llm": "./dist/cli.js"
+    "apple-llm": "dist/cli.js"
   },
   "files": [
     "dist",
