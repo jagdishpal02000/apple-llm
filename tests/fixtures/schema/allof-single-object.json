@@ -1,0 +1,65 @@
+{
+  "name": "allof-single-object",
+  "why": "A single-entry allOf holding an inline object unwraps to that object with its properties intact, not an empty one.",
+  "input": {
+    "type": "object",
+    "properties": {
+      "address": {
+        "description": "Where they live",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string"
+              },
+              "zip": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        ]
+      }
+    },
+    "required": [
+      "address"
+    ]
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "address": {
+        "description": "Where they live",
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "x-order": [
+          "city",
+          "zip"
+        ],
+        "title": "address",
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "address"
+    ],
+    "x-order": [
+      "address"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

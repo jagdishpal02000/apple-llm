@@ -6,11 +6,15 @@
  *   apple-llm setup-cloud [--web-search] [--force]
  *   apple-llm run --tier device --system "..." -      # prompt on stdin
  *   apple-llm run --tier cloud --schema s.json "Extract the fields"
+ *   apple-llm chat                                     # interactive
+ *   apple-llm serve                                    # OpenAI-compatible API
  */
 import { readFile } from 'node:fs/promises';
 import { AppleLLM, captureScreenshot, parseImageFlag, probe } from './index.js';
 import { installCloudShortcut } from './cloud.js';
 import { AppleLLMError } from './errors.js';
+import { runRepl } from './repl.js';
+import { DEFAULT_PORT, serve } from './server.js';
 
 interface Flags {
   tier?: string;
@@ -31,6 +35,11 @@ interface Flags {
   guardrails?: string;
   seed?: string;
   greedy?: boolean;
+  timeout?: string;
+  port?: string;
+  host?: string;
+  apiKey?: string;
+  cors?: string;
   positional: string[];
 }
 
@@ -64,6 +73,11 @@ function parseArgs(argv: string[]): Flags {
       case '--guardrails': flags.guardrails = take('--guardrails'); break;
       case '--seed': flags.seed = take('--seed'); break;
       case '--greedy': flags.greedy = true; break;
+      case '--timeout': flags.timeout = take('--timeout'); break;
+      case '--port': flags.port = take('--port'); break;
+      case '--host': flags.host = take('--host'); break;
+      case '--api-key': flags.apiKey = take('--api-key'); break;
+      case '--cors': flags.cors = take('--cors'); break;
       default: flags.positional.push(arg);
     }
   }
@@ -97,6 +111,8 @@ const USAGE = `apple-llm — Apple's on-device and Private Cloud Compute models
   apple-llm probe                        what this machine can do
   apple-llm setup-cloud [--web-search]   install the Shortcut the cloud tier needs
   apple-llm run [options] <prompt|->     one completion ("-" reads stdin)
+  apple-llm chat [options]               interactive conversation, streamed
+  apple-llm serve [options]              OpenAI-compatible API on localhost
   apple-llm count [options] <prompt|->   tokens this prompt costs, before sending
   apple-llm ask-screen [options] <question|->   screenshot, then ask (device tier)
   apple-llm history --session <id>       show a conversation's mirrored turns
@@ -119,6 +135,19 @@ run options:
   --seed <n>                 reproducible sampling (top-k, seeded)
   --greedy                   greedy decoding (deterministic, but degenerates)
   --web-search               cloud tier only
+  --timeout <seconds>        give up after this long
+  --json                     print the full result: text, usage, tool calls
+                             (with --schema --stream: one partial object per line)
+
+chat options: --tier, --system, --tool, --use-case, --guardrails, --max-tokens.
+  In the chat: /reset, /system <text>, /image <path>, /tokens, /help, /exit.
+
+serve options:
+  --port <n>                 default ${DEFAULT_PORT}
+  --host <addr>              default 127.0.0.1 (0.0.0.0 exposes it to your network)
+  --api-key <key>            require "Authorization: Bearer <key>"
+  --cors <origin>            allow browser clients from this origin
+  --tier device|cloud|auto   for requests not naming a model; default device
 
 ask-screen options: --mode interactive|window|fullscreen (default interactive),
   plus --system, --session, --max-tokens.
@@ -306,6 +335,64 @@ async function main(): Promise<number> {
     }
   }
 
+  if (command === 'serve') {
+    const port = flags.port === undefined ? DEFAULT_PORT : Number(flags.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) return usageError(`--port must be a port number (got "${flags.port}").`);
+    if (flags.tier !== undefined && !['device', 'cloud', 'auto'].includes(flags.tier)) {
+      return usageError(`--tier must be device, cloud, or auto (got "${flags.tier}").`);
+    }
+    const running = await serve({
+      port,
+      host: flags.host,
+      apiKey: flags.apiKey,
+      cors: flags.cors,
+      tier: flags.tier as 'device' | 'cloud' | 'auto' | undefined,
+      log: (line) => process.stderr.write(`  ${line}\n`),
+    });
+    process.stderr.write(
+      `apple-llm serving an OpenAI-compatible API at ${running.url}\n` +
+        `  models: apple-on-device${flags.tier === 'cloud' ? ' (default: apple-private-cloud)' : ''}, apple-private-cloud\n` +
+        `  try:    curl ${running.url}/chat/completions -H 'content-type: application/json' ` +
+        `-d '{"model":"apple-on-device","messages":[{"role":"user","content":"Hello"}]}'\n` +
+        (flags.host === '0.0.0.0' && flags.apiKey === undefined
+          ? '  warning: listening on every interface with no --api-key; anyone on your network can use it\n'
+          : ''),
+    );
+    await new Promise<void>((resolve) => {
+      const stop = (): void => {
+        void running.close().then(resolve);
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+    });
+    return 0;
+  }
+
+  if (command === 'chat') {
+    if (flags.tier !== undefined && !['device', 'cloud', 'auto'].includes(flags.tier)) {
+      return usageError(`--tier must be device, cloud, or auto (got "${flags.tier}").`);
+    }
+    let tools: ('ocr' | 'barcode' | 'spotlight')[] | undefined;
+    try {
+      tools = parseTools(flags.tool, usageError) as typeof tools;
+    } catch (err) {
+      return usageError(err instanceof Error ? err.message : String(err));
+    }
+    const maxTokens = flags.maxTokens === undefined ? undefined : Number(flags.maxTokens);
+    const llm = new AppleLLM({
+      tier: (flags.tier ?? 'auto') as 'device' | 'cloud' | 'auto',
+      maxTokens,
+      useCase: flags.useCase as 'general' | 'contentTagging' | undefined,
+      guardrails: flags.guardrails as 'default' | 'permissive' | undefined,
+    });
+    try {
+      await runRepl(llm, { system: flags.system, call: { tools } });
+    } finally {
+      llm.close();
+    }
+    return 0;
+  }
+
   if (command === 'run') {
     const arg = flags.positional[0];
     if (arg === undefined) {
@@ -322,6 +409,10 @@ async function main(): Promise<number> {
     const maxTokens = flags.maxTokens === undefined ? undefined : Number(flags.maxTokens);
     if (maxTokens !== undefined && Number.isNaN(maxTokens)) {
       return usageError(`--max-tokens must be a number (got "${flags.maxTokens}").`);
+    }
+    const timeoutMs = flags.timeout === undefined ? undefined : Number(flags.timeout) * 1000;
+    if (timeoutMs !== undefined && (Number.isNaN(timeoutMs) || timeoutMs <= 0)) {
+      return usageError(`--timeout must be a number of seconds (got "${flags.timeout}").`);
     }
     const seed = flags.seed === undefined ? undefined : Number(flags.seed);
     if (seed !== undefined && Number.isNaN(seed)) {
@@ -354,15 +445,13 @@ async function main(): Promise<number> {
       useCase: flags.useCase as 'general' | 'contentTagging' | undefined,
       guardrails: flags.guardrails as 'default' | 'permissive' | undefined,
       sampling,
+      timeoutMs,
       onProgress: (p) => process.stderr.write(`  ${p.status}\n`),
     });
     const images = flags.image.length > 0 ? flags.image.map(parseImageFlag) : undefined;
     const documents = flags.document.length > 0 ? flags.document : undefined;
     try {
       if (flags.schema !== undefined) {
-        if (flags.stream === true) {
-          return usageError('--stream is text only; schemas need a complete response.');
-        }
         let schemaText: string;
         try {
           schemaText = await readFile(flags.schema, 'utf8');
@@ -379,7 +468,7 @@ async function main(): Promise<number> {
             `Schema file "${flags.schema}" is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-        const out = await llm.json(prompt, {
+        const call = {
           schema,
           system: flags.system,
           webSearch: flags.webSearch,
@@ -387,12 +476,19 @@ async function main(): Promise<number> {
           documents,
           sessionId: flags.session,
           tools,
-        });
-        process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
-      } else if (flags.stream === true) {
-        if (tier === 'cloud') {
-          return usageError('--stream needs the on-device tier.');
+        };
+        if (flags.stream === true) {
+          // Newline-delimited partial objects, then the final one: pipeable.
+          const stream = llm.streamJson(prompt, call);
+          for await (const partial of stream) process.stdout.write(`${JSON.stringify(partial)}\n`);
+          const final = await stream;
+          process.stdout.write(`${JSON.stringify(final)}\n`);
+        } else if (flags.json === true) {
+          process.stdout.write(`${JSON.stringify(await llm.generate(prompt, call), null, 2)}\n`);
+        } else {
+          process.stdout.write(`${JSON.stringify(await llm.json(prompt, call), null, 2)}\n`);
         }
+      } else if (flags.stream === true) {
         const out = await llm.stream(prompt, {
           system: flags.system,
           images,
@@ -404,15 +500,19 @@ async function main(): Promise<number> {
         process.stdout.write('\n');
         void out;
       } else {
-        const out = await llm.text(prompt, {
+        const call = {
           system: flags.system,
           webSearch: flags.webSearch,
           images,
           documents,
           sessionId: flags.session,
           tools,
-        });
-        process.stdout.write(`${out}\n`);
+        };
+        if (flags.json === true) {
+          process.stdout.write(`${JSON.stringify(await llm.generate(prompt, call), null, 2)}\n`);
+        } else {
+          process.stdout.write(`${await llm.text(prompt, call)}\n`);
+        }
       }
     } finally {
       llm.close();

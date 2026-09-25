@@ -1,0 +1,96 @@
+{
+  "name": "anyof-null-branch",
+  "why": "Zod and pydantic spell nullable as anyOf with a {type:'null'} branch: the null branch becomes 'not required', a lone remaining branch is unwrapped, and the draft's $schema key is dropped.",
+  "input": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "manager": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "score": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "name",
+      "manager",
+      "score"
+    ],
+    "additionalProperties": false
+  },
+  "expected": {
+    "additionalProperties": false,
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "manager": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "x-order": [
+          "name"
+        ],
+        "title": "manager"
+      },
+      "score": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "title": "score"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "x-order": [
+      "name",
+      "manager",
+      "score"
+    ],
+    "title": "Response"
+  }
+}

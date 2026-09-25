@@ -1,7 +1,7 @@
 {
   "name": "apple-llm",
-  "version": "0.1.0",
-  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node. No API key, no account, macOS 26+ on Apple Silicon.",
+  "version": "0.2.0",
+  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node: tools, streaming, structured output, an OpenAI-compatible server and a Vercel AI SDK provider. No API key, no account.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,13 +15,39 @@
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/index.d.cts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./ai-sdk": {
+      "import": {
+        "types": "./dist/ai-sdk.d.ts",
+        "default": "./dist/ai-sdk.js"
+      },
+      "require": {
+        "types": "./dist/ai-sdk.d.cts",
+        "default": "./dist/ai-sdk.cjs"
+      }
+    },
+    "./server": {
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      },
+      "require": {
+        "types": "./dist/server.d.cts",
+        "default": "./dist/server.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "apple-llm": "dist/cli.js"
@@ -30,32 +56,58 @@
     "dist",
     "swift",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
+  "sideEffects": false,
   "engines": {
     "node": ">=18"
   },
   "keywords": [
+    "ai-sdk",
     "apple",
-    "llm",
-    "foundation-models",
-    "on-device",
-    "private-cloud-compute",
     "apple-intelligence",
-    "macos",
+    "apple-silicon",
+    "foundation-models",
+    "function-calling",
+    "llm",
     "local-llm",
-    "structured-output"
+    "macos",
+    "on-device",
+    "openai-compatible",
+    "private-cloud-compute",
+    "streaming",
+    "structured-output",
+    "tool-calling",
+    "vercel-ai",
+    "zod"
   ],
   "scripts": {
     "build": "node ../../scripts/embed-helper.mjs && tsup",
     "test": "vitest run",
     "test:live": "APPLE_LLM_LIVE=1 vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.examples.json",
+    "check:package": "npm run build && publint && attw --pack . --profile node16"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/provider": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^4.0.18",
+    "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^22.10.2",
+    "ai": "^7.0.114",
+    "openai": "^7.23.0",
+    "publint": "^0.3.24",
     "tsup": "^8.3.5",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "zod": "^4.6.5"
   }
 }

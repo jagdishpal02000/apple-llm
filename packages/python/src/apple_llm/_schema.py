@@ -1,10 +1,9 @@
 """Translate standard JSON Schema into Apple's ``GenerationSchema`` dialect.
 
 Apple's ``GenerationSchema`` is ``Decodable`` from JSON Schema, but only accepts a
-restricted dialect. These rules were established empirically -- rules 1-5 in
-api-scribe, by decoding a real schema against macOS 26 and 27 until it was
-accepted; rules 6 and 7 here, by decoding this package's fixture corpus against
-macOS 27 (api-scribe hit neither, having only string enums and no empty objects):
+restricted dialect. These rules were established empirically -- rules 1-5 by
+decoding real schemas against macOS 26 and 27 until they were accepted; the
+rest by decoding this package's fixture corpus against macOS 27:
 
  1. Union types are rejected -- ``type: ['string','null']`` fails with "Expected
     value of type String". Nullability is expressed by leaving the property out
@@ -187,11 +186,29 @@ def _convert_node(node: JsonSchema, name: str, ctx: _Context) -> tuple[JsonSchem
                 else:
                     out["allOf"] = converted_allof
             else:
-                target = "anyOf" if key == "oneOf" else key
-                out[target] = [
-                    _convert_node(entry, name, ctx)[0] if _is_plain_object(entry) else entry
-                    for entry in value
+                # A `{type: "null"}` branch is nullability in union form -- how
+                # Zod spells `.nullable()` on an object and pydantic spells
+                # Optional[Model]. Apple has no null type (rule 1), so it becomes
+                # "not required", and a single remaining branch is unwrapped
+                # rather than left as a one-way anyOf.
+                branches = [
+                    entry for entry in value
+                    if not (_is_plain_object(entry) and entry.get("type") == "null")
                 ]
+                if len(branches) != len(value):
+                    nullable = True
+                converted_branches = [
+                    _convert_node(entry, name, ctx) if _is_plain_object(entry) else (entry, False)
+                    for entry in branches
+                ]
+                if any(branch_nullable for _, branch_nullable in converted_branches):
+                    nullable = True
+                if len(converted_branches) == 1 and _is_plain_object(converted_branches[0][0]):
+                    for k, v in converted_branches[0][0].items():
+                        if k not in out:
+                            out[k] = v
+                elif converted_branches:
+                    out["anyOf"] = [branch for branch, _ in converted_branches]
         elif key in _SCHEMA_KEYS and _is_plain_object(value):
             out[key], _ = _convert_node(value, name, ctx)
         else:
@@ -204,7 +221,8 @@ def _convert_node(node: JsonSchema, name: str, ctx: _Context) -> tuple[JsonSchem
     raw_type = node.get("type")
     if isinstance(raw_type, list):
         non_null = [t for t in raw_type if t != "null"]
-        nullable = len(non_null) != len(raw_type)
+        if len(non_null) != len(raw_type):
+            nullable = True
         if len(non_null) > 1:
             out["anyOf"] = [{"type": t} for t in non_null]
         else:
@@ -239,7 +257,11 @@ def _convert_node(node: JsonSchema, name: str, ctx: _Context) -> tuple[JsonSchem
                 else:
                     out["anyOf"] = [{"type": t} for t in types]
 
-    is_object = out.get("type") == "object" or bool(converted)
+    # An object merged up from an unwrapped branch (a lone anyOf branch, or a
+    # single-entry allOf) was already converted, properties and all; rebuilding
+    # it here from this node's own -- empty -- properties would erase them.
+    merged = not converted and _is_plain_object(out.get("properties"))
+    is_object = not merged and (out.get("type") == "object" or bool(converted))
     if is_object:
         props: JsonSchema = {schema_key: child for schema_key, (child, _) in converted.items()}
         # Rule 7: `properties` must be present even when empty, or Apple reads
@@ -290,6 +312,10 @@ def _convert_node(node: JsonSchema, name: str, ctx: _Context) -> tuple[JsonSchem
     if out.get("type") == "string" and "anyOf" not in out and "allOf" not in out:
         out.pop("title", None)
 
+    # Rule 9: `pattern` fails at generation time with "UnsupportedGuide", for
+    # every regex tried. Dropped here; the caller's validation still applies.
+    out.pop("pattern", None)
+
     return out, nullable
 
 
@@ -314,4 +340,6 @@ def to_apple_schema(schema: JsonSchema, root_name: str = "Response") -> JsonSche
     the reply a guarantee rather than a request."""
     ctx = _Context()
     _reserve_def_titles(schema, ctx)
-    return _convert_node(schema, root_name, ctx)[0]
+    # `$schema` names the draft, which Apple's decoder has no use for.
+    rest = {k: v for k, v in schema.items() if k != "$schema"}
+    return _convert_node(rest, root_name, ctx)[0]

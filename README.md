@@ -48,31 +48,34 @@ it is reached through a private Shortcuts action that Apple can change or remove
 in any OS release, and it has no constrained decoding, so `json()` there is a
 request rather than a guarantee.
 
-**v1 was non-streaming with no tool calling.** The model reports the
-`toolCalling` capability and `session.streamResponse` exists, and both are now
-wired up: `stream()` for partials-as-they-arrive, `tools: ['ocr', 'barcode',
-'spotlight']` for Apple's built-in on-device tools, and `sessionId` for named
-multi-turn conversations. Streaming is text-only (partial JSON is not a usable
-delta); generic function calling — user-supplied tools executed client-side —
-is still a later version.
+**What 0.2 adds (npm package).** Function tools executed in your process,
+Zod/Standard Schema structured output, `for await` streaming of text and of
+partial objects, message-list conversations with automatic trimming,
+cancellation and timeouts, token usage, an OpenAI-compatible server
+(`apple-llm serve`) and a Vercel AI SDK provider — and, on macOS 27 Golden
+Gate, images on the cloud tier, whose server model is the one Siri AI is built
+on (see [below](#macos-27-golden-gate-reaching-siri-ais-model)). See
+[packages/node/README.md](packages/node/README.md) and its
+[CHANGELOG](packages/node/CHANGELOG.md). The Python package shares the new helper
+and keeps working unchanged; it does not expose these features yet.
 
 ## The two tiers
 
 |  | on-device | cloud (Private Cloud Compute) |
 |---|---|---|
-| Model | AFM 3 Core Advanced (~20B sparse, 1–4B active) | the large "Siri" model |
-| Context | 8192 tokens (4096 on macOS 26) | 32768 tokens |
-| Typical latency | 0.5–2s warm | ~2s, ~11s at 14k tokens |
+| Model | AFM 3 Core Advanced (~20B sparse, 1–4B active) | Apple's next-gen server model — Siri AI's, on macOS 27 Golden Gate |
+| Context | 8192 tokens (4096 on macOS 26) | 32768 tokens (a needle at 25k found; 41k refused) |
+| Typical latency | 0.3–2s warm | ~2s, ~11s at 25k tokens |
 | JSON | **guaranteed** by constrained decoding | asked for in the prompt, recovered from prose |
 | Privacy | nothing leaves the machine | **your prompt leaves the machine** |
 | Setup | none | one-time `apple-llm setup-cloud` |
 | Limits | none | quota'd |
-| Vision | yes (macOS 27) | not exposed here |
+| Vision | yes (macOS 27) | yes (macOS 27 Golden Gate), passed as a Shortcuts input |
 | Reasoning | **no** (the model says so) | yes |
-| Web search | no | optional `WFAllowWebSearch` |
-| Streaming | yes, text-only (`stream()`) | no |
-| Built-in tools | `ocr`, `barcode`, `spotlight` (macOS 27) | no |
-| Conversations | named `sessionId` threads + `history` | no |
+| Web search | no | optional `WFAllowWebSearch` — answers about last month's news, correctly |
+| Streaming | text and partial objects | one chunk |
+| Tools | your functions + `ocr`, `barcode`, `spotlight` (macOS 27) | no |
+| Conversations | message lists, named `sessionId` threads | message lists, as text |
 
 `tier: 'auto'` uses the device when it is available, else the cloud when the
 shortcut is installed, else raises an error naming the setup step.
@@ -238,7 +241,9 @@ becomes an immediate `QuotaError` instead of a wasted Shortcuts round trip.
 
 Both bindings are shaped the same.
 
-**Node** — TypeScript, ESM + CJS, async.
+**Node** — TypeScript, ESM + CJS, async. The full 0.2 API (tools, Zod,
+streams, message lists, the server and the AI SDK provider) is in
+[packages/node/README.md](packages/node/README.md); the core is shared with Python:
 
 ```ts
 import { AppleLLM, probe } from 'apple-llm';
@@ -302,6 +307,8 @@ Both packages install the same one:
 ```bash
 apple-llm probe
 apple-llm setup-cloud [--web-search]
+apple-llm chat                                            # interactive (npm)
+apple-llm serve                                           # OpenAI-compatible API (npm)
 apple-llm run --tier device --system "You are terse." -   # prompt on stdin
 apple-llm run --tier cloud --schema schema.json "Extract the fields"
 apple-llm run --image photo.png "What is in this image?"
@@ -344,7 +351,7 @@ concurrency above 1 buys nothing.
 
 `json()` on device is a guarantee, not a request — but only because
 `toAppleSchema()` rewrites your JSON Schema into the restricted dialect Apple's
-decoder accepts. Eight rules, each found by a rejected schema:
+decoder accepts. Nine rules, each found by a rejected schema:
 
 1. **No union types.** `type: ["string","null"]` fails. Nullability is expressed
    by leaving the key out of `required`.
@@ -364,11 +371,22 @@ decoder accepts. Eight rules, each found by a rejected schema:
 8. **A `title` on a `string` is rejected** as a "named string type" needing an
    enum. Titles are stripped from plain strings. This matters most for pydantic,
    which titles every property.
+9. **Every `pattern` is rejected** at generation time with `UnsupportedGuide` —
+   even `^[A-Z]{3}$`. Zod puts one on `.email()`, `.uuid()` and `.datetime()`, so
+   this broke ordinary schemas. Patterns are stripped for the decoder and checked
+   on the reply instead.
 
-Rules 1–5 came from api-scribe. Rules 6–8 were found here, by decoding this
-repo's fixture corpus against macOS 27 — the live test suite still checks every
+Rules 1–5 were found by decoding real schemas against macOS 26 and 27 until
+they were accepted; rules 6–9 by decoding this repo's fixture corpus against
+macOS 27. The live test suite still checks every
 fixture against Apple's own decoder, because Apple is the authority on its
-dialect, not this implementation.
+dialect, not this implementation. macOS 27.2 relaxed rules 2, 4 and 5 for
+objects (an untitled object without `x-order` now decodes); they are still
+applied, since earlier releases require them.
+
+A `{type: "null"}` branch in an `anyOf` — how Zod and pydantic spell a nullable
+object — follows rule 1: it becomes "not required", a lone remaining branch is
+unwrapped, and the missing key is filled back in with `null` on the reply.
 
 **Why the dialect matters more than it looks:** constrained decoding makes a
 schema mistake invisible but total. Collapsing a `["number","string"]` union to
@@ -401,12 +419,47 @@ proceed when it finds them.
 `/usr/bin/fm` on macOS 27 is a different thing and is deliberately not used: it
 is gated behind a machine-wide `sudo fm license`.
 
+### macOS 27 Golden Gate: reaching Siri AI's model
+
+Siri AI in Golden Gate runs on what Apple calls the next generation of Apple
+Foundation Models on Private Cloud Compute (press reports say it is built with
+Google's Gemini; Apple's APIs do not say, and the model describes itself as
+Apple's). Every door to it was tried on macOS 27.2 (26B5091g). What was found:
+
+- **The framework describes it, and still will not run it.**
+  `PrivateCloudComputeLanguageModel` reports reasoning, vision, tool calling and
+  guided generation with a 32,768-token window — readable without the
+  entitlement, so `probe()` now reports them — but `respond` still fails without
+  `com.apple.developer.private-cloud-compute`. Apple offers it to apps through
+  the App Store Small Business Program, which an installable package cannot use.
+- **Shortcuts reaches it, and that is what the cloud tier uses.** Golden Gate
+  replaced the Use Model action's choices: Apple's own gallery shortcuts set
+  `WFLLMModel` to `"Apple Intelligence"`; the old `"Private Cloud Compute"` and
+  `"On-Device"` values now fail with "An error occurred while loading the
+  model". Leaving the key out — as this package always has — gives byte-identical
+  output to `"Apple Intelligence"`, so existing installs already use the new
+  model. Measured through it: a logic puzzle the on-device model lost track of,
+  solved; a fact buried in 25,000 tokens, found; an image, described; and with
+  web search, the 2026 World Cup final result, correct.
+- **Images work through Shortcuts** as extra `-i` inputs beside the prompt
+  file — with the existing shortcut, no reinstall. The model reads the prompt
+  and sees the image in either order.
+- **The Siri AI app offers nothing to automate.** `Siri AI.app`
+  (`com.apple.campo`) ships an App Intents manifest with no actions.
+- **Gemini itself** comes to the framework through Google's Firebase SDK, with
+  your own Gemini API key — a different, paid-or-free-tier Google service, not
+  Apple's model and not free through Apple.
+- **Not reachable:** the Use Model action's reasoning effort (`thinkingEffort`
+  exists internally, with no user-facing parameter), and constrained decoding
+  on the server model (Shortcuts has no schema input), so cloud JSON stays
+  "requested, validated, repaired".
+
 ## Layout
 
 ```
 swift/helper.swift          the single source of truth; both packages ship a copy
 scripts/embed-helper.mjs    regenerates both copies and verifies the hashes
-packages/node/              npm: apple-llm
+packages/node/              npm: apple-llm (examples/: one runnable file per README section)
 packages/python/            pip: apple-llm
 tests/fixtures/schema/      golden corpus, read by BOTH test suites
 tests/fixtures/images/      image fixture, likewise shared
@@ -422,7 +475,9 @@ compiled binary.
 ```bash
 # packages/node
 npm test                  # everything that runs without Apple hardware
-APPLE_LLM_LIVE=1 npm test # adds the on-device tests
+APPLE_LLM_LIVE=1 npm test # adds the on-device tests, the AI SDK provider
+                          # through `ai`, and the server through `openai`
+npm run check:package     # build, then publint and are-the-types-wrong
 
 # packages/python
 pytest
@@ -433,11 +488,6 @@ Cloud tests consume quota and need `APPLE_LLM_LIVE_CLOUD=1` as well. Everything
 live is gated on an env var *and* a runtime probe, so a machine without Apple
 Intelligence skips cleanly instead of failing.
 
-## Credit
-
-Both routes were discovered, debugged and shipped in
-[api-scribe](https://github.com/jagdish/api-scribe) (MIT), which this package
-extracts from. Every measurement quoted here and in the source comments came from
-that work.
+## License
 
 MIT.

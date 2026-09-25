@@ -1,7 +1,7 @@
 /**
  * Apple's `GenerationSchema` is `Decodable` from JSON Schema, but only accepts a
- * restricted dialect. These rules were established empirically in api-scribe, by
- * decoding a real schema against macOS 26 and 27 until it was accepted:
+ * restricted dialect. These rules were established empirically, by decoding
+ * real schemas against macOS 26 and 27 until they were accepted:
  *
  *  1. Union types are rejected — `type: ['string','null']` fails with
  *     "Expected value of type String". Nullability is expressed by leaving the
@@ -21,9 +21,8 @@
  *     fails with "Expected value of type String". Stringifying it is accepted
  *     but changes the output type — the model then emits `"200"` rather than
  *     `200` — so a numeric enum is converted to its underlying type instead and
- *     the literal constraint is dropped. api-scribe reached the same conclusion
- *     the hard way: it settled on a plain `integer` for HTTP status after a
- *     string-typed union produced junk like `": 201"`.
+ *     the literal constraint is dropped. A string-typed status-code union once
+ *     produced junk like `": 201"`; a plain `integer` is what works.
  *  7. An object with no properties still needs an explicit `properties: {}`.
  *     Without it Apple reads `additionalProperties` in its other JSON Schema
  *     sense — a schema for the values — and fails with "Expected value of type
@@ -37,9 +36,18 @@
  *     strings. This matters most for pydantic, whose `model_json_schema()`
  *     titles every single property.
  *
+ *  9. `pattern` is rejected at generation time with "UnsupportedGuide", for any
+ *     regex — even `^[A-Z]{3}$`. It is stripped, and checked on the reply
+ *     instead. (Found on macOS 27.2 through Zod, which puts a pattern on
+ *     `.email()`, `.uuid()` and `.datetime()`.)
+ *
  * Rules 6, 7 and 8 were found by decoding this package's own fixture corpus
- * against macOS 27. api-scribe hit none of them: it had only string enums, no
- * empty objects, and hand-written schemas that never titled a string.
+ * against macOS 27: they only show up with numeric enums, empty objects, and
+ * machine-generated schemas that title every string.
+ *
+ * macOS 27.2 relaxed rules 2, 4 and 5 for objects: an object without a title,
+ * x-order or additionalProperties now decodes. They are still applied, since
+ * macOS 26 and 27.0–27.1 require them and they cost nothing where not needed.
  *
  * `$ref` / `$defs` are otherwise supported and pass through untouched.
  *
@@ -198,10 +206,23 @@ function convertNode(node: JsonSchema, name: string, ctx: Context): ConvertedNod
           out.allOf = allOfConverted;
         }
       } else {
-        const target = key === 'oneOf' ? 'anyOf' : key;
-        out[target] = value.map((entry) =>
-          isPlainObject(entry) ? convertNode(entry, name, ctx).schema : entry,
+        // A `{type: "null"}` branch is nullability in union form — how Zod
+        // spells `.nullable()` on an object and pydantic spells Optional[Model].
+        // Apple has no null type (rule 1), so it becomes "not required", and a
+        // single remaining branch is unwrapped rather than left as a one-way anyOf.
+        const branches = value.filter((entry) => !(isPlainObject(entry) && entry.type === 'null'));
+        if (branches.length !== value.length) nullable = true;
+        const convertedBranches = branches.map((entry) =>
+          isPlainObject(entry) ? convertNode(entry, name, ctx) : { schema: entry as JsonSchema, nullable: false },
         );
+        if (convertedBranches.some((b) => b.nullable)) nullable = true;
+        if (convertedBranches.length === 1 && isPlainObject(convertedBranches[0].schema)) {
+          for (const [k, v] of Object.entries(convertedBranches[0].schema)) {
+            if (out[k] === undefined) out[k] = v;
+          }
+        } else if (convertedBranches.length > 0) {
+          out.anyOf = convertedBranches.map((b) => b.schema);
+        }
       }
     } else if (SCHEMA_KEYS.includes(key) && isPlainObject(value)) {
       out[key] = convertNode(value, name, ctx).schema;
@@ -217,7 +238,7 @@ function convertNode(node: JsonSchema, name: string, ctx: Context): ConvertedNod
   const rawType = node.type;
   if (Array.isArray(rawType)) {
     const nonNull = rawType.filter((t) => t !== 'null');
-    nullable = nonNull.length !== rawType.length;
+    if (nonNull.length !== rawType.length) nullable = true;
     if (nonNull.length > 1) {
       out.anyOf = nonNull.map((t) => ({ type: t }));
     } else {
@@ -251,7 +272,11 @@ function convertNode(node: JsonSchema, name: string, ctx: Context): ConvertedNod
     }
   }
 
-  const isObject = out.type === 'object' || converted.size > 0;
+  // An object merged up from an unwrapped branch (a lone anyOf branch, or a
+  // single-entry allOf) was already converted, properties and all; rebuilding
+  // it here from this node's own — empty — properties would erase them.
+  const merged = converted.size === 0 && isPlainObject(out.properties);
+  const isObject = !merged && (out.type === 'object' || converted.size > 0);
   if (isObject) {
     const props: JsonSchema = {};
     for (const [key, child] of converted) props[key] = child.schema;
@@ -298,6 +323,13 @@ function convertNode(node: JsonSchema, name: string, ctx: Context): ConvertedNod
   if (out.type === 'string' && out.anyOf === undefined && (out as any).allOf === undefined)
     delete out.title;
 
+  // Rule 9: `pattern` fails at generation time with "UnsupportedGuide", for
+  // every regex tried — `^[A-Z]{3}$` included. Zod attaches one to `.email()`,
+  // `.uuid()` and `.datetime()`, so leaving it would break the most ordinary
+  // schemas. It is dropped here and checked on the reply instead (see
+  // checkPatterns), so the constraint still holds, one retry later at worst.
+  delete out.pattern;
+
   return { schema: out, nullable };
 }
 
@@ -327,5 +359,8 @@ function reserveDefTitles(schema: JsonSchema, ctx: Context): void {
 export function toAppleSchema(schema: JsonSchema, rootName = 'Response'): JsonSchema {
   const ctx: Context = { counter: { n: 0 }, defTitles: new Map(), used: new Set() };
   reserveDefTitles(schema, ctx);
-  return convertNode(schema, rootName, ctx).schema;
+  // `$schema` names the draft, which Apple's decoder has no use for; Zod and
+  // ArkType always emit it.
+  const { $schema: _draft, ...rest } = schema;
+  return convertNode(rest, rootName, ctx).schema;
 }

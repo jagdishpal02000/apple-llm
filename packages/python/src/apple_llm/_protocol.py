@@ -1,11 +1,10 @@
 """A long-lived helper process handling newline-delimited JSON.
 
-This is the single most important piece of the on-device path. api-scribe
-measured ~17s per call when it spawned a helper per request against ~1.5s once
-the model was resident, with identical prompts and identically short outputs --
-so keeping one process alive is worth roughly an order of magnitude. Both failure
-modes it guards against are silent: they produce correct output, just 10-20x
-slower.
+This is the single most important piece of the on-device path. Spawning a
+helper per request measured ~17s per call against ~1.5s once the model was
+resident, with identical prompts and identically short outputs -- so keeping
+one process alive is worth roughly an order of magnitude. Both failure modes it
+guards against are silent: they produce correct output, just 10-20x slower.
 
 Requests are serialised, and that costs nothing: Apple's framework serialises
 inference anyway. Four concurrent requests measured 29.19s against 29.45s

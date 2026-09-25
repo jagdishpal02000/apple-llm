@@ -1,176 +1,315 @@
 # apple-llm
 
-Apple's on-device and Private Cloud Compute LLMs, from Node. No API key, no
-account, no developer program membership.
+Apple's built-in LLMs from Node — the on-device model and Private Cloud
+Compute. No API key, no account, no model download, **zero runtime
+dependencies**.
 
 ```bash
 npm install apple-llm
 ```
 
 ```ts
-import { AppleLLM, probe } from 'apple-llm';
+import { AppleLLM } from 'apple-llm';
 
-await probe();
-// { device: { available, contextSize, variant }, cloud: { available, installed } }
-
-const llm = new AppleLLM({ tier: 'device' });          // 'device' | 'cloud' | 'auto'
-await llm.text('Summarize this', { system: 'You are terse.' });
-await llm.json('Extract the fields', { schema });       // guaranteed to match, on device
-llm.close();
+const llm = new AppleLLM();
+await llm.text('Summarize this in one line: …');
 ```
 
-ESM + CJS, fully typed, **zero runtime dependencies**. A small Swift helper is
-compiled on first use and cached; there is no postinstall script, so installing
-on Linux or an Intel Mac always succeeds.
+That is the whole setup. A small Swift helper compiles on first use (a few
+seconds, once) and stays warm between calls.
 
-## Read this before you use it
+- **Everything an LLM SDK should have** — streaming (`for await`), structured
+  output typed by Zod, tool calling with your own JavaScript functions,
+  multi-turn chat, cancellation, timeouts, token counting, usage.
+- **Three ways in** — this library, an [OpenAI-compatible server](#openai-compatible-server)
+  for any tool that speaks OpenAI, and a [Vercel AI SDK provider](#vercel-ai-sdk).
+- **Two tiers** — on-device (private, fast, free) and Apple's big server
+  model on Private Cloud Compute — on macOS 27 Golden Gate, the one Siri AI is
+  built on: reasoning, images, live web knowledge, 32k context. Free, no key,
+  behind the same API.
 
-- **macOS 26+ on Apple Silicon.** No fallback anywhere else. Import always
-  works; `probe()` returns `available: false` with an actionable reason.
-- **The on-device model is small** (~20B sparse, 1–4B active, 8192-token context
-  on macOS 27). Good at classification, extraction, tagging, rewriting and short
-  prose. **Bad at code generation and long reasoning.**
-- **The cloud tier is not local.** It sends your prompt to Apple's Private Cloud
-  Compute, off your machine. Free but quota'd, reached through a private
-  Shortcuts action Apple can change in any OS release, and with no constrained
-  decoding — so `json()` there is a request, not a guarantee.
-- **Streaming is text-only, tools are Apple's built-ins.** `stream()` gives
-  partials-as-they-arrive; `tools: ['ocr', 'barcode', 'spotlight']` enables
-  on-device Vision/Spotlight tools. Generic user-supplied function calling is
-  still a later version.
+## Read this first
+
+- **macOS 26+ on Apple Silicon, with Apple Intelligence on.** Nothing works
+  elsewhere, but importing always succeeds and `probe()` says exactly why.
+- **The on-device model is small** (~20B sparse, 1–4B active; 8,192-token
+  context). Good at extraction, classification, tagging, rewriting, summaries
+  and short answers. Bad at code and long reasoning. Use it for the jobs it
+  suits.
+- **The cloud tier is not local.** `tier: 'cloud'` sends your prompt to Apple's
+  Private Cloud Compute. The default, `auto`, uses the device when it can.
+
+## Quick tour
+
+### Structured output, typed by your schema
+
+On device, the shape is **guaranteed** by constrained decoding — the model
+cannot produce anything else. Pass a Zod 4 (or ArkType, or Valibot) schema and
+the result is typed and validated; plain JSON Schema works too.
+
+```ts
+import { z } from 'zod';
+
+const Contact = z.object({
+  name: z.string(),
+  email: z.string().email(),
+  phone: z.string().nullable(),
+});
+
+const contact = await llm.json('Reach Grace Hopper at grace@navy.mil', { schema: Contact });
+//    ^? { name: string; email: string; phone: string | null }
+```
+
+Refinements the decoder cannot enforce (`.email()`, `.min()`) are checked
+afterwards; a reply that fails gets one automatic retry with the problems
+pointed out, then a `SchemaValidationError` carrying the issues and the raw
+text.
+
+### Streaming
+
+```ts
+for await (const delta of llm.stream('Write a haiku about bridges')) {
+  process.stdout.write(delta);
+}
+
+const text = await llm.stream('…');              // or just await the whole reply
+const { usage } = await llm.stream('…').result;   // or everything about it
+```
+
+Breaking out of the loop cancels generation. Structured output streams too —
+partial objects as the model fills them in, for rendering a card or form while
+it is still being written:
+
+```ts
+for await (const partial of llm.streamJson(prompt, { schema: Contact })) {
+  render(partial); // { name: 'Grace' } → { name: 'Grace', email: '…' } → …
+}
+```
+
+### Tools: your JavaScript, called by the model
+
+```ts
+import { tool } from 'apple-llm';
+
+const getWeather = tool({
+  name: 'getWeather',
+  description: 'Current weather for a city',
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }) => fetchWeather(city), // city: string
+});
+
+const result = await llm.generate('Do I need an umbrella in Paris?', {
+  tools: [getWeather],
+});
+result.text;      // "No — it's 21°C and sunny in Paris."
+result.toolCalls; // [{ name: 'getWeather', arguments: { city: 'Paris' }, output: '…' }]
+```
+
+`execute` runs in your process, mid-generation, with your credentials and
+database. Arguments are schema-guaranteed like `json()`. A tool that throws
+ends the call with a `ToolExecutionError` whose `cause` is your error. Tools
+mix freely with Apple's built-ins: `tools: ['ocr', getWeather]`.
+
+Leave out `execute` and generation stops at the call instead
+(`finishReason: 'tool-calls'`), so you can run it yourself — send the result
+back as a `tool` message to continue.
+
+### Conversations
+
+Pass a message list anywhere a prompt goes:
+
+```ts
+import type { ChatMessage } from 'apple-llm';
+
+const messages: ChatMessage[] = [
+  { role: 'system', content: 'You are terse.' },
+  { role: 'user', content: 'My cat is called Biscuit.' },
+];
+const reply = await llm.generate(messages);
+messages.push(reply.message, { role: 'user', content: 'What is my cat called?' });
+await llm.text(messages); // "Biscuit."
+```
+
+History becomes Apple's native transcript, not a text preamble. When a long
+conversation outgrows the context window, the oldest turns are dropped to fit
+and `result.trimmedTurns` says how many (`trimHistory: false` to get a
+`ContextLengthError` instead).
+
+Or let the helper keep the thread — it survives restarts:
+
+```ts
+const chat = llm.conversation('support-ticket-42', { system: 'You are terse.' });
+await chat.text('My cat is called Biscuit.');
+await chat.text('What is my cat called?'); // "Biscuit."
+```
+
+### Cancellation and timeouts
+
+```ts
+await llm.text(prompt, { signal: controller.signal }); // AbortError
+await llm.text(prompt, { timeoutMs: 5_000 });          // TimeoutError
+new AppleLLM({ timeoutMs: 30_000 });                   // default for every call
+```
+
+Cancelling stops the model itself, not just the promise: the next call does not
+wait behind a reply nobody wants.
+
+### Images, documents, long text
+
+```ts
+await llm.text('What is in this photo?', { images: ['./photo.jpg'] });
+await llm.text('Read the total.', { images: ['./receipt.png'], tools: ['ocr'] });
+await llm.text('Compare these quotes.', { documents: ['./a.md', './b.md'] });
+await llm.summarize(fiftyPageReport); // longer than the window? summarised in parts
+```
+
+### Knowing what a call costs
+
+```ts
+const { tokens, contextSize } = await llm.countTokens(messages, { schema, tools });
+const { usage, finishReason } = await llm.generate(prompt);
+// usage: { inputTokens, outputTokens, totalTokens, cachedInputTokens }
+// finishReason: 'stop' | 'length' | 'tool-calls' — 'length' means maxTokens cut it off
+```
+
+### The big model: Private Cloud Compute
+
+```ts
+const cloud = new AppleLLM({ tier: 'cloud' }); // after `npx apple-llm setup-cloud`, once
+
+await cloud.text(puzzle);                                   // reasons it through
+await cloud.text('What is in this photo?', { images: ['./photo.jpg'] });
+await cloud.text('Who won the last World Cup?', { webSearch: true }); // live web knowledge
+await cloud.json(prompt, { schema: Contact });              // typed, validated
+```
+
+On macOS 27 Golden Gate this reaches the next-generation server model Apple
+built Siri AI on. `probe()` reads what it can do straight from the framework —
+reasoning, vision, tool calling and a 32,768-token window — without calling it.
+Measured against the on-device model: it solves multi-step logic puzzles the
+small model loses track of, finds a fact buried in 25,000 tokens, reads images,
+and with `webSearch` answers questions about last month's news correctly. It
+costs no API key and no money, only Apple's per-device quota
+(`probe().cloud.quota`), and your prompt leaves the Mac.
+
+## OpenAI-compatible server
+
+```bash
+npx apple-llm serve
+# apple-llm serving an OpenAI-compatible API at http://127.0.0.1:11436/v1
+```
+
+Point any OpenAI client at it — the official SDKs, LangChain, LlamaIndex,
+editor plugins, Open WebUI — with any API key:
+
+```ts
+import OpenAI from 'openai';
+const openai = new OpenAI({ baseURL: 'http://127.0.0.1:11436/v1', apiKey: 'unused' });
+await openai.chat.completions.create({ model: 'apple-on-device', messages });
+```
+
+`/v1/chat/completions` supports streaming, tool calls, `response_format` with
+a JSON Schema (guaranteed on device), images as data or http URLs, `seed` and
+`top_p`. It binds to localhost, sends no CORS headers unless you pass
+`--cors <origin>`, can require `--api-key`, and serves the on-device model
+unless a client asks for `apple-private-cloud` by name. Or from code:
+`import { serve } from 'apple-llm/server'`.
+
+## Vercel AI SDK
+
+```ts
+import { generateText, streamText, stepCountIs, tool } from 'ai';
+import { apple } from 'apple-llm/ai-sdk';
+
+const { text } = await generateText({
+  model: apple(), // on device; apple('cloud') for Private Cloud Compute
+  prompt: 'What is the weather in Paris?',
+  tools: { getWeather: tool({ inputSchema: z.object({ city: z.string() }), execute: … }) },
+  stopWhen: stepCountIs(3),
+});
+```
+
+AI SDK 6 and 7. `generateText`, `streamText`, `generateObject` / `Output.object`
+(constrained on device), multi-step tools, images and abort signals. Apple-only
+settings go in `providerOptions: { apple: { useCase, guardrails, builtInTools } }`.
+
+## CLI
+
+```bash
+apple-llm chat                                  # interactive, streamed; Ctrl+C stops a reply
+apple-llm run "Summarize: …"                    # one completion; "-" reads stdin
+apple-llm run --json "…"                        # text + usage + tool calls as JSON
+apple-llm run --schema person.json "Ada, 1815"  # guaranteed JSON
+apple-llm run --schema person.json --stream "…" # partial objects, one per line
+apple-llm run --image photo.png "What is this?"
+apple-llm run --tool ocr --image receipt.png "Read the total."
+apple-llm serve [--port 11436] [--api-key k]    # OpenAI-compatible API
+apple-llm count --system "…" -                  # tokens before sending
+apple-llm probe                                 # what this machine can do
+apple-llm setup-cloud                           # one-time, for the cloud tier
+```
+
+`apple-llm --help` for everything, including the Write-with-Siri presets
+(`rewrite`, `proofread`, `summarize`, `draft`) and `ask-screen`.
 
 ## Two traps worth knowing
 
 **Never set `temperature: 0`.** Constrained decoding already guarantees the
 schema, so greedy decoding buys nothing and reliably degenerates — it padded an
-unbounded array forever, then ran away inside a single string (2.7KB of
-`"tasks-tasks-tasks-…"`), turning a 2s call into 20s. The default is `0.4`.
-Apple honours `maxItems` but ignores `maxLength`: bound your arrays.
+unbounded array forever, then ran away inside a single string, turning a 2s
+call into 20s. The default is `0.4`. For reproducible output use a seed
+instead: `sampling: { mode: 'topK', k: 50, seed: 42 }` returns byte-identical
+text across runs, without the degeneration.
 
-**Keep the client alive.** One long-lived helper process holds the model
-resident; spawning one per call measured ~17s against ~1.5s. Construct
-`AppleLLM` once, `close()` when you are done. Both traps produce *correct*
-output, only slower, so neither looks like a bug.
+**Bound your arrays.** Apple honours `maxItems` (`.max(5)` in Zod) but ignores
+`maxLength` on strings.
 
-Apple serialises inference regardless — 4 concurrent requests measured 29.19s
-against 29.45s sequentially — so the request queue serialises deliberately.
+## The two tiers
 
-## What macOS 27 adds
-
-```ts
-const { device, cloud } = await probe();
-device.capabilities;   // { vision, guidedGeneration, reasoning, toolCalling }
-device.useCases;       // ['general', 'contentTagging']
-cloud.quota;           // { status: 'belowLimit' | 'limitReached', approachingLimit, resetDate }
-```
-
-On this machine the on-device model reports vision, guided generation and tool
-calling, but **not** reasoning. `cloud.quota` is real quota state read from
-`PrivateCloudComputeLanguageModel.quotaUsage` — the entitlement that blocks PCC
-*inference* does not block reading it — so an exhausted quota becomes an
-immediate `QuotaError` rather than a wasted Shortcuts round trip.
-
-**Count tokens before sending**, turning a `ContextLengthError` into arithmetic:
-
-```ts
-const { tokens, contextSize } = await llm.countTokens(prompt, { system });
-```
-
-**Reproducible output without the `temperature: 0` trap.** Greedy decoding is
-deterministic *and* degenerates; seeded top-k is deterministic and does not:
-
-```ts
-await llm.text(prompt, { sampling: { mode: 'topK', k: 50, seed: 42 }, temperature: 0.9 });
-```
-
-It works only because the helper uses a fresh session per request — reusing one
-changes the transcript and with it the output.
-
-**Vision**, by path — optionally labelled for follow-up turns. A missing file
-is an error, never a silent drop:
-
-```ts
-await llm.text('What is in this image?', { images: ['./photo.png'] });
-await llm.text('What is in the image labelled chart?', {
-  images: [{ path: './scan.png', label: 'chart' }],
-});
-```
-
-**Streaming, conversations, tools, documents, and Write-with-Siri presets:**
-
-```ts
-await llm.stream('Count to three.', { onDelta: (d) => process.stdout.write(d) });
-
-const chat = llm.conversation('trip-planning');
-await chat.text('My cat is called Biscuit.');
-await chat.text('What is my cat called?');  // Biscuit.
-await chat.history();                       // mirrored turns, oldest first
-
-await llm.text('Read the total.', { images: ['./receipt.png'], tools: ['ocr'] });
-await llm.text('Which notes mention the bridge?', { tools: ['spotlight'] });
-await llm.text('Compare these quotes.', { documents: ['./a.md', './b.md'] });
-
-await llm.rewrite('gonna grab a bite', { instruction: 'Make it formal.' });
-await llm.proofread('Their going to the store...');
-await llm.summarize(longText);
-await llm.askScreen('What is on this schedule?');
-```
-
-**A tagging-specialised model**, `permissive` guardrails for rewriting, and
-`prewarm()` to load model assets up front (worth little once they are resident —
-0.31s against 0.36s here — but real on a cold system):
-
-```ts
-const llm = new AppleLLM({ tier: 'device', useCase: 'contentTagging' });
-await new AppleLLM({ guardrails: 'permissive' }).text('Rewrite more formally: …');
-await llm.prewarm();
-```
+|  | on-device | cloud (Private Cloud Compute) |
+|---|---|---|
+| Model | AFM 3 Core (~1–4B active) | Apple's next-gen server model (Siri AI's, on macOS 27) |
+| Privacy | nothing leaves the Mac | **your prompt leaves the Mac** |
+| Context | 8,192 tokens (4,096 on macOS 26) | 32,768 tokens |
+| Reasoning | no | yes |
+| Latency | ~0.3–2s warm | ~2s, ~10s at 25k tokens |
+| JSON | guaranteed by constrained decoding | requested, recovered, validated |
+| Streaming | yes, text and objects | one chunk (Shortcuts is not incremental) |
+| Images | yes (macOS 27) | yes (macOS 27 Golden Gate) |
+| Web knowledge | no | yes, with `webSearch` |
+| Your tools, sessions | yes | no |
+| Setup | none | `apple-llm setup-cloud`, once |
+| Limits | none | Apple's quota (read before calling: `probe().cloud.quota`) |
 
 ## Errors
 
-```ts
-import { QuotaError, ModelUnavailableError } from 'apple-llm';
-```
+Every error is an `AppleLLMError` with a stable `code`, and a class to branch on:
 
-`ModelUnavailableError` (`.reason` is `appleIntelligenceNotEnabled` /
-`modelNotReady` / `deviceNotEligible` / …), `SchemaRejectedError`,
-`ContextLengthError`, `QuotaError` (`.resetDate`), `TimeoutError`,
-`SetupRequiredError`, `RefusalError`.
+| class | when |
+|---|---|
+| `ModelUnavailableError` | Apple Intelligence off, model downloading, unsupported Mac/OS (`.reason` says which) |
+| `ContextLengthError` | the request does not fit (`.contextSize`, `.tokenCount`) |
+| `SchemaRejectedError` | Apple's decoder refused a schema |
+| `SchemaValidationError` | the reply failed your schema's validation (`.issues`, `.text`) |
+| `ToolExecutionError` | your tool threw (`.toolName`, `.cause`) |
+| `AbortError` / `TimeoutError` | your signal fired / the deadline passed |
+| `QuotaError` | rate limited (`.resetDate` when Apple gives one) |
+| `RefusalError` | the model's guardrails declined |
+| `ModelBusyError` | other processes are using the model; already retried with backoff |
+| `SetupRequiredError`, `UnsupportedError` | a setup step is missing / the tier cannot do that |
 
-## CLI
+## Resource use
 
-```bash
-apple-llm probe
-apple-llm setup-cloud [--web-search]     # one-time, generates + signs locally
-apple-llm run --tier device --system "You are terse." -
-apple-llm run --tier cloud --schema schema.json "Extract the fields"
-apple-llm run --image photo.png "What is in this image?"
-apple-llm run --image scan.png::chart "What is in the image labelled chart?"
-apple-llm run --tool ocr --image receipt.png "Read the total."
-apple-llm run --document a.md --document b.md "Compare these."
-apple-llm run --session trip --stream "What is my cat called?"
-apple-llm history --session trip
-apple-llm reset --session trip
-apple-llm ask-screen "What is on this schedule?"
-apple-llm rewrite "gonna grab a bite"
-apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"
-apple-llm run --seed 42 "Reproducible output"
-apple-llm count --system "You are terse." -    # tokens before sending
-```
+One `AppleLLM` keeps one helper process warm — construct it once. The helper
+does not keep your process alive, so a script exits without `close()`; call
+`close()` (or use `await using llm = new AppleLLM()`) to release it early in a
+long-running program. Apple serialises inference, so requests queue rather than
+run in parallel — concurrency buys nothing here.
 
-## Schemas
+## More
 
-`json()` runs your JSON Schema through `toAppleSchema()`, which rewrites it into
-the restricted dialect Apple's `GenerationSchema` decoder accepts — eight rules
-covering unions, `x-order`, enums, titles, `$ref`-by-title, `additionalProperties`,
-string-typed `const`, and empty objects. See the
-[full notes in the repo](https://github.com/jagdish/apple-llm#the-generationschema-dialect).
+The [repository README](https://github.com/jagdishpal02000/apple-llm#readme)
+has the measurements behind every default, the eight rules of Apple's schema
+dialect, and why the cloud tier goes through Shortcuts.
 
-The details matter more than they look: constrained decoding makes a schema
-mistake invisible but total. A union collapsed to the wrong branch does not warn
-— it makes the right answer unreachable.
-
-## Credit
-
-Extracted from [api-scribe](https://github.com/jagdish/api-scribe) (MIT), where
-both routes were discovered and shipped. MIT.
+MIT.

@@ -123,9 +123,21 @@ def test_median_call_stays_under_4s(client):
 
 
 def test_a_raw_schema_is_rejected_as_schema_rejected_error(client):
+    # Raw JSON Schema, not run through to_apple_schema, with a union type (rule 1).
+    # It used to be enough to omit the title and x-order, but macOS 27.2
+    # relaxed rules 2, 4 and 5 for objects; unions are still refused.
     with pytest.raises(SchemaRejectedError):
-        # Raw JSON Schema, not run through to_apple_schema: no title, no x-order.
-        client.complete("hi", schema={"type": "object", "properties": {"a": {"type": "string"}}})
+        client.complete(
+            "hi",
+            schema={
+                "type": "object",
+                "title": "R",
+                "x-order": ["a"],
+                "required": ["a"],
+                "additionalProperties": False,
+                "properties": {"a": {"type": ["string", "null"]}},
+            },
+        )
 
 
 def test_compiles_from_a_cold_cache(device_available):
@@ -208,8 +220,8 @@ def test_cloud_round_trip():
 
 
 class TestMacOS27Capabilities:
-    """Capabilities macOS 27 added on top of what api-scribe used. Each was
-    confirmed against the framework before being wired up; see the README."""
+    """Capabilities macOS 27 added to the framework. Each was confirmed
+    against the framework before being wired up; see the README."""
 
     def test_reports_what_the_model_can_do(self, device_available):
         if not device_available:

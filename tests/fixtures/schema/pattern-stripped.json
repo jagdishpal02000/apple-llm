@@ -1,0 +1,63 @@
+{
+  "name": "pattern-stripped",
+  "why": "Rule 9: Apple rejects every pattern at generation time (UnsupportedGuide), so the keyword is dropped at any depth; a property named pattern is untouched.",
+  "input": {
+    "type": "object",
+    "properties": {
+      "email": {
+        "type": "string",
+        "format": "email",
+        "pattern": "^[^@]+@[^@]+$"
+      },
+      "codes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "maxItems": 5
+      },
+      "pattern": {
+        "type": "string",
+        "description": "A property that happens to be called pattern"
+      }
+    },
+    "required": [
+      "email",
+      "codes",
+      "pattern"
+    ]
+  },
+  "expected": {
+    "type": "object",
+    "properties": {
+      "email": {
+        "format": "email",
+        "type": "string"
+      },
+      "codes": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 5,
+        "type": "array"
+      },
+      "pattern": {
+        "description": "A property that happens to be called pattern",
+        "type": "string"
+      }
+    },
+    "required": [
+      "email",
+      "codes",
+      "pattern"
+    ],
+    "x-order": [
+      "email",
+      "codes",
+      "pattern"
+    ],
+    "title": "Response",
+    "additionalProperties": false
+  }
+}

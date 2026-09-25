@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "apple-llm": ["./src/index.ts"],
+      "apple-llm/ai-sdk": ["./src/ai-sdk.ts"],
+      "apple-llm/server": ["./src/server.ts"]
+    }
+  },
+  "include": ["examples"]
+}

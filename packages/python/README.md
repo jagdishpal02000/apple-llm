@@ -197,7 +197,6 @@ string-typed `const`, and empty objects. Rule 8 exists because pydantic titles
 every property and Apple rejects a titled string. See the
 [full notes in the repo](https://github.com/jagdish/apple-llm#the-generationschema-dialect).
 
-## Credit
+## License
 
-Extracted from [api-scribe](https://github.com/jagdish/api-scribe) (MIT), where
-both routes were discovered and shipped. MIT.
+MIT.

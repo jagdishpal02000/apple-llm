@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { OnProgress } from './compile.js';
 import {
+  AbortError,
   AppleLLMError,
   ContextLengthError,
   QuotaError,
@@ -14,7 +15,7 @@ import {
 import { parseLlmJson } from './json-recovery.js';
 import type { JsonSchema } from './schema.js';
 import { isAppleSiliconMac } from './target.js';
-import type { CloudQuota } from './device.js';
+import type { CloudModelInfo, CloudQuota, ImageAttachment, ModelCapabilities } from './device.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +70,12 @@ export interface CloudProbe {
    * no on-device model), since that is the only thing that can read it.
    */
   quota?: CloudQuota;
+  /**
+   * What the server model can do, from the framework (macOS 27+). On Golden
+   * Gate: reasoning, vision, tool calling and guided generation. Tools and
+   * guided generation are not reachable through Shortcuts; vision is.
+   */
+  capabilities?: ModelCapabilities;
 }
 
 /**
@@ -248,6 +255,13 @@ export interface CloudRequest {
   prompt: string;
   /** Run with "Use Broad World Knowledge" — needs the web shortcut installed. */
   webSearch?: boolean;
+  /** Kills the `shortcuts run` process. The quota spent so far is not refunded. */
+  signal?: AbortSignal;
+  /**
+   * Images for the server model to look at, passed to the shortcut as extra
+   * inputs. Needs a server model that reports vision (macOS 27 Golden Gate).
+   */
+  images?: ImageAttachment[];
 }
 
 /**
@@ -259,6 +273,8 @@ export class CloudClient {
   private ready = false;
   /** Last known quota, set by `probe()` so a call can fail fast. */
   private quota?: CloudQuota;
+  /** What the framework says the server model can do, when it could be read. */
+  private model?: CloudModelInfo;
 
   /**
    * Tell the client what the framework reported about the quota.
@@ -266,8 +282,14 @@ export class CloudClient {
    * Worth doing because a `shortcuts run` against an exhausted quota costs a
    * full round trip to find out; this turns that into an immediate typed error.
    */
-  setQuota(quota: CloudQuota | undefined): void {
+  setQuota(quota: CloudModelInfo | undefined): void {
     this.quota = quota;
+    this.model = quota;
+  }
+
+  /** Whether the server model is known to read images. False when it could not be read (macOS 26). */
+  get supportsImages(): boolean {
+    return this.model?.capabilities?.vision === true;
   }
 
   private assertQuota(): void {
@@ -285,7 +307,7 @@ export class CloudClient {
   }
 
   get contextSize(): number {
-    return CLOUD_CONTEXT_TOKENS;
+    return this.model?.contextSize ?? CLOUD_CONTEXT_TOKENS;
   }
 
   async ensureReady(onProgress?: OnProgress): Promise<void> {
@@ -312,20 +334,32 @@ export class CloudClient {
         'cloud',
       );
     }
-    const prompt = request.system ? `${request.system}\n\n${request.prompt}` : request.prompt;
+    const images = await imageInputs(request.images);
+    let prompt = request.system ? `${request.system}\n\n${request.prompt}` : request.prompt;
+    const labels = images.map((image, i) => (image.label === undefined ? undefined : `${i + 1}: ${image.label}`));
+    if (labels.some((label) => label !== undefined)) {
+      prompt = `${prompt}\n\nAttached images, in order — ${labels.map((l, i) => l ?? `${i + 1}`).join(', ')}.`;
+    }
 
     const dir = await mkdtemp(path.join(os.tmpdir(), 'apple-llm-cloud-'));
     try {
       const inPath = path.join(dir, 'prompt.txt');
       const outPath = path.join(dir, 'reply.txt');
       await writeFile(inPath, prompt, 'utf8');
+      // Every input reaches the model: the prompt file as text, and each image
+      // as an attachment it can see. Order does not matter to it.
+      const inputs = [inPath, ...images.map((image) => image.path)].flatMap((p) => ['-i', p]);
 
       try {
-        await execFileAsync('shortcuts', ['run', name, '-i', inPath, '-o', outPath], {
+        await execFileAsync('shortcuts', ['run', name, ...inputs, '-o', outPath], {
           timeout: CALL_TIMEOUT_MS,
           killSignal: 'SIGKILL',
+          signal: request.signal,
         });
       } catch (error) {
+        if (request.signal?.aborted === true) {
+          throw new AbortError('The request was aborted.', 'cloud', { cause: request.signal.reason });
+        }
         throw describeRunFailure(error, name);
       }
 
@@ -362,6 +396,24 @@ export class CloudClient {
   close(): void {
     /* nothing long-lived: each call is its own `shortcuts run`. */
   }
+}
+
+/** Resolve image attachments to existing files; a missing one is an error, never a silent drop. */
+async function imageInputs(
+  images: ImageAttachment[] | undefined,
+): Promise<Array<{ path: string; label?: string }>> {
+  const out: Array<{ path: string; label?: string }> = [];
+  for (const image of images ?? []) {
+    const entry = typeof image === 'string' ? { path: image } : image;
+    const absolute = path.resolve(entry.path);
+    try {
+      await stat(absolute);
+    } catch {
+      throw new AppleLLMError(`Image not found: ${entry.path}`, 'cloud');
+    }
+    out.push({ path: absolute, ...(entry.label === undefined ? {} : { label: entry.label }) });
+  }
+  return out;
 }
 
 /**

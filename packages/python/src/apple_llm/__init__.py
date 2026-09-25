@@ -1,7 +1,6 @@
 """apple-llm -- one library for Apple's on-device and Private Cloud Compute models.
 
 macOS 26+ on Apple Silicon only. No API key, no account, no developer program.
-Extracted from api-scribe (MIT), which discovered and shipped both routes.
 
     from apple_llm import AppleLLM, probe
 
@@ -474,8 +473,8 @@ class AppleLLM:
         return model.model_validate(result) if model is not None else result
 
     def complete_json(self, system: str, user: str, schema: Any) -> Any:
-        """api-scribe's ``LlmClient`` shape, so it can drop its four files and
-        depend on this instead. Not used internally."""
+        """``json()`` in the ``(system, user, schema)`` shape many LLM clients
+        use, for dropping this in behind an existing interface."""
         return self.json(user, schema=schema, system=system)
 
     def close(self) -> None:

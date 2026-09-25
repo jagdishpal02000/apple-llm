@@ -10,6 +10,7 @@ import { DeviceClient, probeDevice } from '../src/device.js';
 import { cacheDir, ensureBinary, fingerprint, helperSource } from '../src/compile.js';
 import { hostTarget } from '../src/target.js';
 import { toAppleSchema } from '../src/schema.js';
+import { SchemaRejectedError } from '../src/errors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -126,10 +127,22 @@ onDevice('live: on-device', () => {
 
   it('reports a schema Apple rejects as a SchemaRejectedError', async () => {
     if (gate()) return;
-    await expect(
-      // Raw JSON Schema, not run through toAppleSchema: no title, no x-order.
-      client.complete({ prompt: 'hi', schema: { type: 'object', properties: { a: { type: 'string' } } } }),
-    ).rejects.toThrow(/schema/i);
+    // Raw JSON Schema, not run through toAppleSchema, with a union type (rule 1).
+    // It used to be enough to omit the title and x-order, but macOS 27.2
+    // relaxed rules 2, 4 and 5 for objects; unions are still refused.
+    const rejected = client.complete({
+      prompt: 'hi',
+      schema: {
+        type: 'object',
+        title: 'R',
+        'x-order': ['a'],
+        required: ['a'],
+        additionalProperties: false,
+        properties: { a: { type: ['string', 'null'] } },
+      },
+    });
+    await expect(rejected).rejects.toBeInstanceOf(SchemaRejectedError);
+    await expect(rejected).rejects.toThrow(/schema/i);
   });
 
   it('closes without leaving its helper running', async () => {
@@ -193,8 +206,8 @@ onCloud('live: private cloud compute (consumes quota)', () => {
 const onExtras = LIVE ? describe : describe.skip;
 
 /**
- * Capabilities macOS 27 added on top of what api-scribe used. Each was
- * confirmed against the framework before being wired up; see the README.
+ * Capabilities macOS 27 added to the framework. Each was confirmed against
+ * the framework before being wired up; see the README.
  */
 onExtras('live: macOS 27 capabilities', () => {
   const client = new DeviceClient();

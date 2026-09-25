@@ -5,9 +5,9 @@
  * shape and the reply is already JSON. Private Cloud Compute returns prose, so
  * the object has to be dug out of whatever the model wrapped around it.
  *
- * api-scribe's version only stripped fences when the reply *started* with one,
- * which fails on the common "Here is the JSON:\n```json\n{...}\n```". This one
- * also scans for a balanced object or array.
+ * Stripping fences only when the reply *starts* with one fails on the common
+ * "Here is the JSON:\n```json\n{...}\n```", so this also finds a fence
+ * anywhere, and scans for a balanced object or array.
  */
 
 /** Strip a Markdown code fence anywhere in the text, preferring a json-tagged one. */
