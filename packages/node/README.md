@@ -16,7 +16,7 @@ await llm.text('Summarize this in one line: …');
 ```
 
 That is the whole setup. A small Swift helper compiles on first use (a few
-seconds, once) and stays warm between calls.
+seconds, once, with the Xcode Command Line Tools) and stays warm between calls.
 
 - **Everything an LLM SDK should have** — streaming (`for await`), structured
   output typed by Zod, tool calling with your own JavaScript functions,
@@ -32,6 +32,8 @@ seconds, once) and stays warm between calls.
 
 - **macOS 26+ on Apple Silicon, with Apple Intelligence on.** Nothing works
   elsewhere, but importing always succeeds and `probe()` says exactly why.
+- **The Xcode Command Line Tools** (`xcode-select --install`), for compiling
+  the helper. Full Xcode is not needed.
 - **The on-device model is small** (~20B sparse, 1–4B active; 8,192-token
   context). Good at extraction, classification, tagging, rewriting, summaries
   and short answers. Bad at code and long reasoning. Use it for the jobs it

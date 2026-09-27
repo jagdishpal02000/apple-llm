@@ -1,7 +1,8 @@
 # apple-llm
 
 Apple's two built-in LLMs, from Node and Python. No API key, no account, no
-developer program membership, nothing to install beyond the package.
+developer program membership, no Xcode — nothing to install beyond the package
+and Apple's Command Line Tools.
 
 ```bash
 npm install apple-llm
@@ -35,6 +36,10 @@ Linux, or Windows. Importing the package still succeeds everywhere — `probe()`
 tells you why the model is unavailable rather than failing at install time — but
 there is no fallback. This is a wrapper around hardware you either have or
 don't.
+
+**The Xcode Command Line Tools.** The Swift helper is compiled on first use
+with `swiftc`, which ships with them (`xcode-select --install`). Full Xcode is
+not needed.
 
 **The on-device model is small.** `AFM 3 Core Advanced` is roughly 20B sparse
 with 1–4B active, with an 8192-token context on macOS 27 (4096 on macOS 26). It

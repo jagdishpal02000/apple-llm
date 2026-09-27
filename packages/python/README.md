@@ -20,8 +20,9 @@ with AppleLLM(tier="device") as llm:            # "device" | "cloud" | "auto"
 ```
 
 Pure-Python wheel, **no runtime dependencies**, no build step. A small Swift
-helper is compiled on first use and cached, so installing on Linux or an Intel
-Mac always succeeds and `probe()` explains why the model is unavailable there.
+helper is compiled on first use (with the Xcode Command Line Tools) and cached,
+so installing on Linux or an Intel Mac always succeeds and `probe()` explains
+why the model is unavailable there.
 
 ## Pydantic
 
@@ -57,6 +58,8 @@ helper never outlives the interpreter.
 ## Read this before you use it
 
 - **macOS 26+ on Apple Silicon.** No fallback anywhere else.
+- **The Xcode Command Line Tools** (`xcode-select --install`), for compiling
+  the helper. Full Xcode is not needed.
 - **The on-device model is small** (~20B sparse, 1–4B active, 8192-token context
   on macOS 27). Good at classification, extraction, tagging, rewriting and short
   prose. **Bad at code generation and long reasoning.**

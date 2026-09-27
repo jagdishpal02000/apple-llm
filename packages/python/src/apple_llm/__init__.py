@@ -57,7 +57,7 @@ from ._json_recovery import extract_json_span, parse_llm_json, strip_code_fences
 from ._schema import JsonSchema, to_apple_schema
 from ._target import host_target, is_apple_silicon_mac, target_triple_from
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AppleLLM",

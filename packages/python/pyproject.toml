@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apple-llm"
-version = "0.1.0"
+version = "0.2.0"
 description = "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Python. No API key, no account, macOS 26+ on Apple Silicon."
 readme = "README.md"
 license = { text = "MIT" }
