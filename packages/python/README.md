@@ -3,6 +3,14 @@
 Apple's on-device and Private Cloud Compute LLMs, from Python. No API key, no
 account, no developer program membership.
 
+[![PyPI](https://img.shields.io/pypi/v/apple-llm)](https://pypi.org/project/apple-llm/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/apple-llm)](https://pypi.org/project/apple-llm/)
+[![GitHub stars](https://img.shields.io/github/stars/jagdishpal02000/apple-llm?style=social)](https://github.com/jagdishpal02000/apple-llm)
+
+[Website](https://jagdishpal02000.github.io/apple-llm/) ·
+[GitHub](https://github.com/jagdishpal02000/apple-llm) ·
+[Issues](https://github.com/jagdishpal02000/apple-llm/issues)
+
 ```bash
 pip install apple-llm
 ```
@@ -202,4 +210,6 @@ every property and Apple rejects a titled string. See the
 
 ## License
 
-MIT.
+MIT. Not affiliated with or endorsed by Apple Inc. If apple-llm saved you time,
+a [⭐ on GitHub](https://github.com/jagdishpal02000/apple-llm) helps other Mac
+developers find it.

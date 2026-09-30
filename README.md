@@ -1,8 +1,22 @@
 # apple-llm
 
-Apple's two built-in LLMs, from Node and Python. No API key, no account, no
-developer program membership, no Xcode — nothing to install beyond the package
-and Apple's Command Line Tools.
+**The free LLM already on your Mac, from Node and Python.** Apple's two
+built-in models — the on-device Foundation Models LLM behind Apple
+Intelligence, and Apple's large model on Private Cloud Compute. No API key, no
+account, no developer program membership, no Xcode — nothing to install beyond
+the package and Apple's Command Line Tools.
+
+[![npm](https://img.shields.io/npm/v/apple-llm?label=npm)](https://www.npmjs.com/package/apple-llm)
+[![npm downloads](https://img.shields.io/npm/dw/apple-llm)](https://www.npmjs.com/package/apple-llm)
+[![PyPI](https://img.shields.io/pypi/v/apple-llm)](https://pypi.org/project/apple-llm/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/apple-llm)](https://pypi.org/project/apple-llm/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![macOS 26+ on Apple Silicon](https://img.shields.io/badge/macOS_26%2B-Apple_Silicon-black?logo=apple)
+
+**[Website](https://jagdishpal02000.github.io/apple-llm/)** ·
+[Node API](packages/node/README.md) ·
+[Python](packages/python/README.md) ·
+[Changelog](packages/node/CHANGELOG.md)
 
 ```bash
 npm install apple-llm
@@ -24,6 +38,13 @@ from apple_llm import AppleLLM
 with AppleLLM(tier="device") as llm:
     llm.text("Summarize this in one line", system="You are terse.")
     llm.json("Extract the fields", schema=Person)   # a pydantic model, validated back
+```
+
+Or skip the SDK entirely: point any OpenAI client — the official SDKs,
+LangChain, Open WebUI, editor plugins — at the on-device model:
+
+```bash
+npx apple-llm serve   # OpenAI-compatible API at http://127.0.0.1:11436/v1, model "apple-on-device"
 ```
 
 Both packages compile one small Swift helper on first use and share the compiled
@@ -493,6 +514,12 @@ Cloud tests consume quota and need `APPLE_LLM_LIVE_CLOUD=1` as well. Everything
 live is gated on an env var *and* a runtime probe, so a machine without Apple
 Intelligence skips cleanly instead of failing.
 
+## Contributing
+
+Issues and PRs are welcome — reports from macOS versions and Macs this has not
+been tested on most of all. If apple-llm saved you time, a ⭐ helps other Mac
+developers find it.
+
 ## License
 
-MIT.
+MIT. Not affiliated with or endorsed by Apple Inc.

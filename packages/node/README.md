@@ -4,6 +4,15 @@ Apple's built-in LLMs from Node — the on-device model and Private Cloud
 Compute. No API key, no account, no model download, **zero runtime
 dependencies**.
 
+[![npm](https://img.shields.io/npm/v/apple-llm)](https://www.npmjs.com/package/apple-llm)
+[![npm downloads](https://img.shields.io/npm/dw/apple-llm)](https://www.npmjs.com/package/apple-llm)
+[![GitHub stars](https://img.shields.io/github/stars/jagdishpal02000/apple-llm?style=social)](https://github.com/jagdishpal02000/apple-llm)
+
+[Website](https://jagdishpal02000.github.io/apple-llm/) ·
+[GitHub](https://github.com/jagdishpal02000/apple-llm) ·
+[Changelog](https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/CHANGELOG.md) ·
+[Issues](https://github.com/jagdishpal02000/apple-llm/issues)
+
 ```bash
 npm install apple-llm
 ```
@@ -311,7 +320,9 @@ run in parallel — concurrency buys nothing here.
 ## More
 
 The [repository README](https://github.com/jagdishpal02000/apple-llm#readme)
-has the measurements behind every default, the eight rules of Apple's schema
-dialect, and why the cloud tier goes through Shortcuts.
+has the measurements behind every default, the nine rules of Apple's schema
+dialect, and why the cloud tier goes through Shortcuts. If apple-llm saved you
+time, a [⭐ on GitHub](https://github.com/jagdishpal02000/apple-llm) helps other
+Mac developers find it.
 
-MIT.
+MIT. Not affiliated with or endorsed by Apple Inc.

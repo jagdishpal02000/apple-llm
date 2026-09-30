@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apple-llm — Apple's free built-in LLM for Node.js and Python</title>
+<meta name="description" content="Call Apple Intelligence's on-device Foundation Models LLM and Private Cloud Compute from Node.js and Python. Free, no API key, no model download. OpenAI-compatible server, tool calling, streaming, guaranteed JSON. macOS 26+ on Apple Silicon.">
+<meta name="keywords" content="apple intelligence, foundation models, local llm, on-device llm, private cloud compute, macos, apple silicon, openai compatible, node, python, structured output">
+<link rel="canonical" href="https://jagdishpal02000.github.io/apple-llm/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2312151A'/%3E%3Cpath d='M18 40l10-8-10-8' stroke='%235BD1C9' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M34 42h12' stroke='%239AA4FF' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+<meta property="og:title" content="apple-llm — the free AI already on your Mac">
+<meta property="og:description" content="Apple's on-device and Private Cloud Compute LLMs from Node.js and Python. No API key, no account, no model download. OpenAI-compatible server, tools, streaming, guaranteed JSON.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://jagdishpal02000.github.io/apple-llm/">
+<meta property="og:image" content="https://jagdishpal02000.github.io/apple-llm/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="apple-llm: the free AI already on your Mac, from Node and Python">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://jagdishpal02000.github.io/apple-llm/og.png">
+<meta name="theme-color" content="#0D1014" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#FAFBFC" media="(prefers-color-scheme: light)">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "apple-llm",
+  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node.js and Python. No API key, no account.",
+  "codeRepository": "https://github.com/jagdishpal02000/apple-llm",
+  "programmingLanguage": ["TypeScript", "Python", "Swift"],
+  "runtimePlatform": "macOS 26+ on Apple Silicon",
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://jagdishpal02000.github.io/apple-llm/"
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Libre+Franklin:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#FAFBFC; --surface:#fff; --sunk:#F1F4F7;
+  --ink:#12151A; --ink2:#4A525E; --ink3:#6B7482;
+  --line:#DEE3E9; --line2:#EBEEF3;
+  --accent:#3A46C4; --accent-soft:#ECEEFB; --accent-line:#C3C8F0;
+  --device:#0E6F6B; --device-soft:#E3F1F0; --device-line:#A8D6D2;
+  --cloud:#8A5A0D; --cloud-soft:#F8F0DE; --cloud-line:#E0C68C;
+  --code-bg:#14171D; --code-ink:#DCE2EA; --code-dim:#8A94A8;
+  --code-key:#A3ADFF; --code-str:#83D3AA; --code-num:#E8B87C; --code-fn:#7FC9E9;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --body:"Libre Franklin",system-ui,-apple-system,sans-serif;
+  --display:"Archivo","Libre Franklin",system-ui,sans-serif;
+  --radius:12px;
+}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0D1014; --surface:#151A21; --sunk:#1B2129;
+    --ink:#E8ECF2; --ink2:#A8B2C0; --ink3:#838D9D;
+    --line:#263041; --line2:#1D2530;
+    --accent:#9AA4FF; --accent-soft:#1A2040; --accent-line:#353D6E;
+    --device:#5BD1C9; --device-soft:#0C2826; --device-line:#1E4A46;
+    --cloud:#E3AE5C; --cloud-soft:#2A2010; --cloud-line:#52401F;
+    --code-bg:#090B0F;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1014; --surface:#151A21; --sunk:#1B2129;
+  --ink:#E8ECF2; --ink2:#A8B2C0; --ink3:#838D9D;
+  --line:#263041; --line2:#1D2530;
+  --accent:#9AA4FF; --accent-soft:#1A2040; --accent-line:#353D6E;
+  --device:#5BD1C9; --device-soft:#0C2826; --device-line:#1E4A46;
+  --cloud:#E3AE5C; --cloud-soft:#2A2010; --cloud-line:#52401F;
+  --code-bg:#090B0F;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+/* header */
+header.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--ground) 88%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line2)}
+.top-inner{display:flex;align-items:center;gap:16px;height:60px}
+.brand{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--ink);text-decoration:none;letter-spacing:-.02em;white-space:nowrap}
+.brand span{color:var(--ink3);font-weight:400}
+nav.links{margin-left:auto;display:flex;gap:2px;align-items:center}
+nav.links a{font-size:13.5px;color:var(--ink2);text-decoration:none;padding:6px 10px;border-radius:7px;white-space:nowrap}
+nav.links a:hover{color:var(--ink);background:var(--sunk)}
+.btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:14px;text-decoration:none;padding:9px 16px;border-radius:9px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.btn.primary{background:var(--ink);color:var(--ground);border-color:var(--ink)}
+.btn:hover{filter:brightness(.96)}
+.btn .count{font-family:var(--mono);font-size:12px;font-weight:500;opacity:.75;padding-left:8px;border-left:1px solid color-mix(in srgb,currentColor 30%,transparent)}
+.btn .count:empty{display:none}
+.theme-btn{background:none;border:1px solid var(--line);border-radius:8px;color:var(--ink2);cursor:pointer;padding:6px 10px;font-size:14px;margin-left:4px}
+/* hero */
+.hero{padding:72px 0 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink3);margin-bottom:14px}
+h1{font-family:var(--display);font-weight:800;font-size:clamp(38px,6vw,64px);line-height:1.02;letter-spacing:-.04em;margin:0 0 16px;text-wrap:balance}
+h1 .free{background:linear-gradient(100deg,var(--device),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{font-size:19px;color:var(--ink2);max-width:62ch;margin:0 0 26px;text-wrap:pretty}
+.cta-row{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:28px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 14px;padding:0}
+.chips li{font-family:var(--mono);font-size:12px;color:var(--ink2);border:1px solid var(--line);background:var(--surface);padding:5px 11px;border-radius:7px}
+.chips b{color:var(--ink);font-weight:600}
+.proof{font-size:13.5px;color:var(--ink3);margin:0}
+.proof a{color:var(--ink2)}
+/* terminal */
+.term{background:var(--code-bg);border-radius:var(--radius);overflow:hidden;margin:28px 0 8px;border:1px solid rgba(255,255,255,.08)}
+.term-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08)}
+.dot{width:11px;height:11px;border-radius:50%}
+.term pre{margin:0;padding:18px;overflow-x:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75;color:var(--code-ink)}
+.tok-c{color:var(--code-dim)} .tok-k{color:var(--code-key)} .tok-s{color:var(--code-str)} .tok-n{color:var(--code-num)} .tok-f{color:var(--code-fn)}
+/* sections */
+section{padding:44px 0;scroll-margin-top:64px}
+h2{font-family:var(--display);font-weight:700;font-size:clamp(24px,3.4vw,32px);letter-spacing:-.03em;margin:0 0 8px;text-wrap:balance}
+h3.mini{font-family:var(--display);font-size:17px;margin:22px 0 10px}
+.sub{color:var(--ink3);margin:0 0 24px;max-width:70ch}
+.sub code,.warn code,.faq code,.fit code{font-family:var(--mono);font-size:.86em;background:var(--sunk);padding:1px 5px;border-radius:4px;border:1px solid var(--line2)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.card h3{font-size:15.5px;margin:0 0 6px;font-family:var(--display)}
+.card p{font-size:14px;color:var(--ink2);margin:0}
+.card code{font-family:var(--mono);font-size:.85em;background:var(--sunk);padding:1px 5px;border-radius:4px;border:1px solid var(--line2)}
+.tag{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:5px;margin:0 4px 8px 0}
+.tag.device{background:var(--device-soft);color:var(--device);border:1px solid var(--device-line)}
+.tag.cloud{background:var(--cloud-soft);color:var(--cloud);border:1px solid var(--cloud-line)}
+.tag.both{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line)}
+.tag.npm{background:var(--sunk);color:var(--ink2);border:1px solid var(--line)}
+/* fit */
+.fit{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.fit .card h3{display:flex;align-items:center;gap:8px}
+.fit ul{margin:8px 0 0;padding-left:18px;font-size:14.5px;color:var(--ink2)}
+.fit li{margin-bottom:6px}
+.fit li::marker{color:var(--ink3)}
+.fit .good h3{color:var(--device)}
+.fit .bad h3{color:var(--cloud)}
+/* code */
+.code{position:relative;background:var(--code-bg);border-radius:10px;overflow:hidden;margin:0 0 16px;border:1px solid rgba(255,255,255,.08)}
+.code-top{display:flex;align-items:center;justify-content:space-between;padding:7px 12px 7px 14px;border-bottom:1px solid rgba(255,255,255,.08)}
+.code-name{font-family:var(--mono);font-size:11px;color:var(--code-dim)}
+.copy{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;background:transparent;border:1px solid rgba(255,255,255,.16);color:var(--code-dim);padding:3px 9px;border-radius:6px;cursor:pointer}
+.copy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.35)}
+.copy[data-done="1"]{color:var(--code-str);border-color:var(--code-str)}
+.code pre{margin:0;padding:15px 17px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.7;color:var(--code-ink)}
+.langbar{display:flex;align-items:center;gap:10px;margin:0 0 12px}
+.seg{display:inline-flex;background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:2px;gap:2px}
+.seg button{font-size:13px;font-weight:500;color:var(--ink2);background:transparent;border:0;padding:4px 14px;border-radius:6px;cursor:pointer}
+.seg button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.lang[data-lang="py"]{display:none}
+:root[data-lang="py"] .lang[data-lang="py"]{display:block}
+:root[data-lang="py"] .lang[data-lang="node"]{display:none}
+.note{font-size:14px;color:var(--ink3);margin:-4px 0 16px}
+.note code{font-family:var(--mono);font-size:.88em}
+/* table */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);margin-bottom:16px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+th,td{text-align:left;padding:10px 15px;border-bottom:1px solid var(--line2);vertical-align:top}
+thead th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);background:var(--sunk)}
+tbody tr:last-child td{border-bottom:0}
+td code,li code{font-family:var(--mono);font-size:.86em;background:var(--sunk);padding:1px 5px;border-radius:4px;border:1px solid var(--line2)}
+th.dh{color:var(--device)} th.ch{color:var(--cloud)}
+.warn{border-left:3px solid var(--cloud);background:var(--cloud-soft);padding:13px 17px;border-radius:0 8px 8px 0;margin:0 0 16px;font-size:14.5px;color:var(--ink)}
+ol.steps{margin:0 0 14px;padding-left:22px}
+ol.steps li{margin-bottom:10px}
+/* how it works */
+.how{counter-reset:how}
+.how .card{position:relative;padding-top:44px}
+.how .card::before{counter-increment:how;content:counter(how,decimal-leading-zero);position:absolute;top:16px;left:18px;font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink3)}
+/* faq */
+.faq details{border:1px solid var(--line);background:var(--surface);border-radius:10px;margin-bottom:10px}
+.faq summary{cursor:pointer;padding:14px 18px;font-weight:600;font-size:15.5px;list-style:none;display:flex;justify-content:space-between;gap:12px}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";font-family:var(--mono);color:var(--ink3);font-weight:400}
+.faq details[open] summary::after{content:"–"}
+.faq details > div{padding:0 18px 14px;color:var(--ink2);font-size:15px}
+.faq details > div p{margin:0 0 8px}
+/* star band */
+.band{border:1px solid var(--line);background:var(--surface);border-radius:var(--radius);padding:28px;display:flex;flex-wrap:wrap;gap:16px 24px;align-items:center;justify-content:space-between}
+.band h2{margin:0 0 4px}
+.band p{margin:0;color:var(--ink2)}
+/* footer */
+footer{border-top:1px solid var(--line);padding:32px 0 56px;color:var(--ink3);font-size:13.5px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center}
+footer .links{margin-left:auto}
+footer a{color:var(--ink2)}
+footer .fine{flex-basis:100%;font-size:12.5px}
+.skip{position:absolute;left:-9999px}
+.skip:focus{left:8px;top:8px;z-index:99;background:var(--surface);color:var(--ink);padding:8px 14px;border-radius:6px}
+@media(max-width:860px){nav.links a.hide-t{display:none}}
+@media(max-width:640px){
+  .wrap{padding:0 16px}
+  nav.links a.hide-m{display:none}
+  .brand span{display:none}
+  .hero{padding-top:44px}
+  .lede{font-size:17px}
+  .band{padding:20px}
+  footer .links{margin-left:0}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="#">apple-llm <span>v0.2 · MIT</span></a>
+    <nav class="links" aria-label="Sections">
+      <a class="hide-m hide-t" href="#install">Install</a>
+      <a class="hide-m" href="#quickstart">Quickstart</a>
+      <a class="hide-m hide-t" href="#tiers">Tiers</a>
+      <a class="hide-m" href="#features">Features</a>
+      <a class="hide-m hide-t" href="#server">Server</a>
+      <a class="hide-m" href="#faq">FAQ</a>
+      <a href="https://github.com/jagdishpal02000/apple-llm">GitHub</a>
+      <button class="theme-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="wrap">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="eyebrow">Apple Intelligence · Foundation Models · macOS 26+</div>
+    <h1>The <span class="free">free AI</span> already on your Mac.</h1>
+    <p class="lede">apple-llm lets Node.js and Python call the language models Apple ships with macOS: the on-device model behind Apple Intelligence, and Apple's large model on Private Cloud Compute. No API key, no account, no model download, no Xcode.</p>
+    <div class="cta-row">
+      <a class="btn primary" href="https://github.com/jagdishpal02000/apple-llm">★ Star on GitHub<span class="count" id="stars"></span></a>
+      <a class="btn" href="#install">Get started</a>
+      <a class="btn" href="https://www.npmjs.com/package/apple-llm">npm</a>
+      <a class="btn" href="https://pypi.org/project/apple-llm/">PyPI</a>
+    </div>
+    <ul class="chips">
+      <li><b>No</b> API key</li>
+      <li><b>Zero</b> runtime deps</li>
+      <li>Guaranteed <b>JSON</b></li>
+      <li>OpenAI-compatible <b>server</b></li>
+      <li>Tool <b>calling</b></li>
+      <li>Vercel <b>AI SDK</b></li>
+    </ul>
+    <p class="proof">Discussed on <a href="https://www.reddit.com/r/LocalLLaMA/comments/1ws5l5p/macos_27_ships_a_free_local_llm_on_apple_silicon/">r/LocalLLaMA</a> · MIT licensed · Apple Silicon only</p>
+    <div class="term" role="img" aria-label="Terminal showing apple-llm install and a first call">
+      <div class="term-bar"><span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span><span class="dot" style="background:#28C840"></span></div>
+<pre><span class="tok-c">$ npm install apple-llm      # or: pip install apple-llm</span>
+<span class="tok-c">$ xcode-select --install     # once, for the Swift helper</span>
+
+<span class="tok-k">import</span> { AppleLLM } <span class="tok-k">from</span> <span class="tok-s">'apple-llm'</span>;
+<span class="tok-k">const</span> llm = <span class="tok-k">new</span> <span class="tok-f">AppleLLM</span>({ tier: <span class="tok-s">'device'</span> });
+<span class="tok-k">await</span> llm.<span class="tok-f">text</span>(<span class="tok-s">'Summarize this in one line: …'</span>);
+<span class="tok-c">// private, 0.3–2s warm, nothing leaves the machine</span></pre>
+    </div>
+  </div>
+
+  <!-- INSTALL -->
+  <section id="install">
+    <h2>Install</h2>
+    <p class="sub">Nothing compiles at install time. A small Swift helper builds on first use (a few seconds, once), and the npm and pip packages share one cached binary.</p>
+    <div class="code"><div class="code-top"><span class="code-name">shell</span><button class="copy">Copy</button></div>
+<pre><code>npm install apple-llm
+pip install apple-llm
+xcode-select --install   # Xcode Command Line Tools, once (full Xcode not needed)
+
+apple-llm probe          # what this Mac can do
+apple-llm setup-cloud    # once, only for the cloud tier</code></pre></div>
+    <div class="warn"><strong>Read this before you use it.</strong> You need macOS 26+ on Apple Silicon with Apple Intelligence turned on. It won't run anywhere else (the import still succeeds, and <code>probe()</code> tells you why). The cloud tier <strong>sends your prompt to Apple's servers</strong>, so it isn't local; <code>tier: 'auto'</code> uses the device whenever it can.</div>
+  </section>
+
+  <!-- QUICKSTART -->
+  <section id="quickstart">
+    <h2>Quickstart</h2>
+    <p class="sub">One client covers both tiers (<code>device</code>, <code>cloud</code>, <code>auto</code>). Node is async; Python ships sync and async clients.</p>
+    <div class="langbar"><div class="seg" role="tablist" aria-label="Code language">
+      <button role="tab" data-langbtn="node" aria-selected="true">Node</button>
+      <button role="tab" data-langbtn="py" aria-selected="false">Python</button>
+    </div></div>
+    <div class="lang" data-lang="node">
+      <div class="code"><div class="code-top"><span class="code-name">TypeScript</span><button class="copy">Copy</button></div>
+<pre><code>import { AppleLLM, probe } from 'apple-llm';
+import { z } from 'zod';
+
+await probe(); // { device: { available, contextSize, variant }, cloud: { … } }
+
+const llm = new AppleLLM(); // tier defaults to 'auto'
+await llm.text('Summarize this in one line', { system: 'You are terse.' });
+
+// Guaranteed shape on device, typed by Zod
+const Contact = z.object({ name: z.string(), email: z.string().email() });
+const contact = await llm.json('Reach Grace at grace@navy.mil', { schema: Contact });
+
+// Streaming; breaking out of the loop stops the model
+for await (const delta of llm.stream('Write a haiku about bridges')) {
+  process.stdout.write(delta);
+}
+
+llm.close();</code></pre></div>
+    </div>
+    <div class="lang" data-lang="py">
+      <div class="code"><div class="code-top"><span class="code-name">Python</span><button class="copy">Copy</button></div>
+<pre><code>from apple_llm import AppleLLM, probe
+from pydantic import BaseModel   # optional: pip install 'apple-llm[pydantic]'
+
+class Person(BaseModel):
+    name: str
+    born: int
+
+probe()  # {"device": {...}, "cloud": {...}}
+
+with AppleLLM(tier="device") as llm:
+    llm.text("Summarize this in one line", system="You are terse.")
+    person = llm.json("Ada Lovelace, born 1815.", schema=Person)
+    person.born  # 1815, a validated Person rather than a dict
+
+    llm.stream("Count to three.", on_delta=print)</code></pre></div>
+    </div>
+  </section>
+
+  <!-- FIT -->
+  <section id="fit">
+    <h2>Know what it's for</h2>
+    <p class="sub">The on-device model is small (~20B sparse, 1–4B active, 8,192-token context). Used for the right jobs it's fast, private and free. Prompting won't make it good at the wrong ones.</p>
+    <div class="fit">
+      <div class="card good">
+        <h3>Good at</h3>
+        <ul>
+          <li>Classification, tagging and topic extraction</li>
+          <li>Pulling fields out of text into guaranteed JSON</li>
+          <li>Reading receipts and screenshots (OCR, macOS 27)</li>
+          <li>Rewriting, proofreading, summarising, short drafts</li>
+          <li>Private processing of personal data, offline</li>
+        </ul>
+      </div>
+      <div class="card bad">
+        <h3>Reach for something else</h3>
+        <ul>
+          <li>Code generation: use a bigger model</li>
+          <li>Multi-step reasoning: the cloud tier reasons, the device model doesn't</li>
+          <li>Long inputs: cloud handles 32k tokens, device 8k</li>
+          <li>Linux, Windows or Intel Macs: there's no fallback</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- TIERS -->
+  <section id="tiers">
+    <h2>The two tiers</h2>
+    <p class="sub"><code>auto</code> uses the device when it's available, then the cloud if the shortcut is installed; otherwise it raises an error that names the setup step.</p>
+    <div class="tw"><table>
+      <thead><tr><th></th><th class="dh">On-device</th><th class="ch">Cloud (Private Cloud Compute)</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Privacy</strong></td><td>Nothing leaves the machine</td><td><strong>Prompt leaves the machine</strong></td></tr>
+        <tr><td><strong>Model</strong></td><td>AFM 3 Core Advanced (~20B sparse, 1–4B active)</td><td>Apple's next-gen server model (Siri AI's, on macOS 27 Golden Gate)</td></tr>
+        <tr><td><strong>Context</strong></td><td>8,192 tokens (4,096 on macOS 26)</td><td>32,768 tokens</td></tr>
+        <tr><td><strong>Latency</strong></td><td>0.3–2s warm</td><td>~2s, ~11s at 25k tokens</td></tr>
+        <tr><td><strong>JSON</strong></td><td><strong>Guaranteed</strong> by constrained decoding</td><td>Requested, recovered from prose, validated</td></tr>
+        <tr><td><strong>Streaming</strong></td><td>Text and partial objects</td><td>One chunk</td></tr>
+        <tr><td><strong>Vision</strong></td><td>Yes (macOS 27)</td><td>Yes (macOS 27 Golden Gate)</td></tr>
+        <tr><td><strong>Reasoning</strong></td><td>No</td><td>Yes</td></tr>
+        <tr><td><strong>Web search</strong></td><td>No</td><td>Optional (<code>--web-search</code>)</td></tr>
+        <tr><td><strong>Tools</strong></td><td>Your functions (npm) + <code>ocr</code>, <code>barcode</code>, <code>spotlight</code></td><td>No</td></tr>
+        <tr><td><strong>Setup / limits</strong></td><td>None / none</td><td><code>setup-cloud</code> once / quota'd</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <h2>What you get</h2>
+    <p class="sub">A full LLM SDK, plus two more ways in: an OpenAI-compatible server and a Vercel AI SDK provider. Tags show which tier or package each feature needs.</p>
+    <div class="grid">
+      <div class="card"><span class="tag device">device</span><h3>Structured output you can trust</h3><p>Constrained decoding means the model can't produce anything but your schema. Pass Zod, ArkType, Valibot, pydantic or plain JSON Schema. On the cloud tier, JSON is recovered and validated.</p></div>
+      <div class="card"><span class="tag device">device</span><span class="tag npm">npm</span><h3>Tool calling</h3><p>The model calls your JavaScript mid-generation, with arguments guaranteed to match the parameter schema. You can mix in Apple's on-device <code>ocr</code>, <code>barcode</code> and <code>spotlight</code>.</p></div>
+      <div class="card"><span class="tag device">device</span><h3>Real streaming</h3><p>Stream text deltas and partial JSON objects as they generate. Breaking out of <code>for await</code> stops the model itself, not just the promise.</p></div>
+      <div class="card"><span class="tag both">both tiers</span><h3>Conversations</h3><p>OpenAI-style message lists are sent as Apple's native transcript and trimmed from the oldest end when the window fills. Named sessions survive restarts.</p></div>
+      <div class="card"><span class="tag npm">npm</span><h3>OpenAI-compatible server</h3><p><code>apple-llm serve</code> exposes <code>/v1/chat/completions</code> with streaming, tools, JSON Schema <code>response_format</code> and images. It binds to localhost only, and the API key is optional.</p></div>
+      <div class="card"><span class="tag npm">npm</span><h3>Vercel AI SDK provider</h3><p><code>apple()</code> works with AI SDK 6 and 7: <code>generateText</code>, <code>streamText</code>, <code>generateObject</code>, multi-step tools and images.</p></div>
+      <div class="card"><span class="tag both">both tiers</span><h3>Images and documents</h3><p>Attach images and text files by path. A missing file raises an error rather than being dropped silently.</p></div>
+      <div class="card"><span class="tag device">device</span><h3>Write with Siri presets</h3><p><code>rewrite</code>, <code>proofread</code>, <code>summarize</code>, <code>draft</code> and <code>tone</code> run on permissive guardrails, which don't refuse to touch your text.</p></div>
+      <div class="card"><span class="tag device">device</span><h3>Built for production</h3><p>Count tokens before you send, get byte-identical output from seeded sampling, and branch on typed errors like <code>ContextLengthError</code> and <code>ModelUnavailableError</code>.</p></div>
+    </div>
+  </section>
+
+  <!-- SERVER -->
+  <section id="server">
+    <h2>A local OpenAI endpoint</h2>
+    <p class="sub">Point any OpenAI client at it (the official SDKs, LangChain, LlamaIndex, Open WebUI, editor plugins) with any API key. It serves the on-device model unless a client asks for <code>apple-private-cloud</code> by name.</p>
+    <div class="code"><div class="code-top"><span class="code-name">shell</span><button class="copy">Copy</button></div>
+<pre><code>npx apple-llm serve
+# apple-llm serving an OpenAI-compatible API at http://127.0.0.1:11436/v1
+# options: --port 11436  --api-key &lt;key&gt;  --cors &lt;origin&gt;  --tier cloud</code></pre></div>
+    <div class="langbar"><div class="seg" role="tablist" aria-label="Client language">
+      <button role="tab" data-langbtn="node" aria-selected="true">Node</button>
+      <button role="tab" data-langbtn="py" aria-selected="false">Python</button>
+    </div></div>
+    <div class="lang" data-lang="node">
+      <div class="code"><div class="code-top"><span class="code-name">TypeScript: openai client</span><button class="copy">Copy</button></div>
+<pre><code>import OpenAI from 'openai';
+
+const openai = new OpenAI({ baseURL: 'http://127.0.0.1:11436/v1', apiKey: 'unused' });
+const res = await openai.chat.completions.create({
+  model: 'apple-on-device', // or 'apple-private-cloud'
+  messages: [{ role: 'user', content: 'Tag this: sourdough with a rye starter' }],
+});</code></pre></div>
+    </div>
+    <div class="lang" data-lang="py">
+      <div class="code"><div class="code-top"><span class="code-name">Python: openai client</span><button class="copy">Copy</button></div>
+<pre><code>from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11436/v1", api_key="unused")
+client.chat.completions.create(
+    model="apple-on-device",  # or "apple-private-cloud"
+    messages=[{"role": "user", "content": "Tag this: sourdough with a rye starter"}],
+)</code></pre></div>
+    </div>
+    <p class="note">The server comes with the npm package, so <code>npx</code> works even if your app is written in Python.</p>
+    <h3 class="mini">Vercel AI SDK</h3>
+    <div class="code"><div class="code-top"><span class="code-name">TypeScript</span><button class="copy">Copy</button></div>
+<pre><code>import { generateText } from 'ai';
+import { apple } from 'apple-llm/ai-sdk';
+
+const { text } = await generateText({
+  model: apple(), // on device; apple('cloud') for Private Cloud Compute
+  prompt: 'Write a one-line release note for a bug fix.',
+});</code></pre></div>
+  </section>
+
+  <!-- CLI -->
+  <section id="cli">
+    <h2>CLI</h2>
+    <p class="sub">Both packages install the same <code>apple-llm</code> command; <code>chat</code> and <code>serve</code> come with the npm package. It's also the quickest way to try the model.</p>
+    <div class="code"><div class="code-top"><span class="code-name">shell</span><button class="copy">Copy</button></div>
+<pre><code>apple-llm chat                                          # interactive, streamed
+apple-llm run --schema person.json "Ada, 1815"          # guaranteed JSON
+apple-llm run --tool ocr --image receipt.png "Read the total."
+apple-llm run --session trip "My cat is Biscuit."
+apple-llm rewrite "gonna grab a bite"                   # + proofread, summarize, draft
+apple-llm ask-screen "Summarize what is on this schedule."
+apple-llm count --system "You are terse." -             # tokens before sending</code></pre></div>
+    <h3 class="mini">Three traps worth knowing</h3>
+    <ol class="steps">
+      <li><strong>Never set <code>temperature: 0</code>.</strong> Constrained decoding already guarantees the schema, and greedy decoding degenerates: a 2s call became 20s. The default is <code>0.4</code>. Use a seed if you need reproducible output.</li>
+      <li><strong>Bound your arrays</strong> with <code>maxItems</code>. Apple honours it but ignores <code>maxLength</code> on strings.</li>
+      <li><strong>Use one client for many calls.</strong> A long-lived helper takes ~1.5s per call, against ~17s when spawning a process per call. Apple serialises inference, so concurrency buys nothing.</li>
+    </ol>
+  </section>
+
+  <!-- HOW -->
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">The package is about fifteen hard-won constraints written down as working code, so nobody has to find them again.</p>
+    <div class="grid how">
+      <div class="card"><h3>A small Swift helper</h3><p>It's compiled with <code>swiftc</code> on first use, cached, and shared by the npm and pip packages. One long-lived process speaks newline-delimited JSON, because a process per call costs ~17s.</p></div>
+      <div class="card"><h3>Apple's schema dialect</h3><p>Your JSON Schema is rewritten into the restricted <code>GenerationSchema</code> dialect Apple's decoder accepts. Each of its nine rules was found by a rejected schema, and the test corpus runs against Apple's own decoder.</p></div>
+      <div class="card"><h3>A shortcut for the cloud</h3><p>The Private Cloud Compute API needs an entitlement no package can ship, so <code>setup-cloud</code> generates a shortcut and signs it on your machine. Nothing is pre-signed, hosted or downloaded.</p></div>
+    </div>
+    <p class="note" style="margin-top:14px">The full story is in the README: <a href="https://github.com/jagdishpal02000/apple-llm#what-this-package-really-is">What this package really is →</a></p>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="faq">
+    <h2>FAQ</h2>
+    <details>
+      <summary>Is it really free?</summary>
+      <div><p>Yes. The on-device model has no key and no limits. The cloud tier is free as well, but Apple applies a per-device quota; <code>probe()</code> reports it, and running out raises a typed <code>QuotaError</code>.</p></div>
+    </details>
+    <details>
+      <summary>Is it local and private?</summary>
+      <div><p>The on-device tier is: nothing leaves your Mac. The cloud tier sends your prompt to Apple's Private Cloud Compute. <code>tier: 'auto'</code> prefers the device, and by default the server only uses the cloud when a client asks for <code>apple-private-cloud</code>.</p></div>
+    </details>
+    <details>
+      <summary>What do I need?</summary>
+      <div><p>macOS 26 or later on Apple Silicon, with Apple Intelligence turned on, plus the Xcode Command Line Tools (<code>xcode-select --install</code>). Intel Macs, Linux and Windows aren't supported. The package still installs there, and <code>probe()</code> says why the model is unavailable.</p></div>
+    </details>
+    <details>
+      <summary>How is this different from Ollama or LM Studio?</summary>
+      <div><p>Those tools run open-weights models that you download and choose, and they're the better option for code and long reasoning. apple-llm uses the model macOS already has, so there's nothing to download or manage. You also get schema-guaranteed JSON and free access to Apple's server model. Plenty of people will want both.</p></div>
+    </details>
+    <details>
+      <summary>Can I use it with my existing OpenAI code?</summary>
+      <div><p>Yes. Run <code>npx apple-llm serve</code>, set your client's base URL to <code>http://127.0.0.1:11436/v1</code>, and use the model <code>apple-on-device</code>. Streaming, tools, JSON Schema <code>response_format</code> and images are supported.</p></div>
+    </details>
+    <details>
+      <summary>Does Python have everything Node has?</summary>
+      <div><p>Not yet. In 0.2, Python covers <code>text</code>, <code>json</code> (with pydantic), streaming, sessions, images, documents, Apple's built-in tools and the Write-with-Siri presets. Your own function tools, Zod schemas, the server and the AI SDK provider are npm-only for now.</p></div>
+    </details>
+    <details>
+      <summary>Is this made by Apple?</summary>
+      <div><p>No. apple-llm is an independent, MIT-licensed open-source project. It isn't affiliated with or endorsed by Apple.</p></div>
+    </details>
+  </section>
+
+  <!-- STAR -->
+  <section id="star">
+    <div class="band">
+      <div>
+        <h2>Found it useful?</h2>
+        <p>A star on GitHub helps other Mac developers find it. Bugs and ideas are welcome as issues.</p>
+      </div>
+      <div class="cta-row" style="margin:0">
+        <a class="btn primary" href="https://github.com/jagdishpal02000/apple-llm">★ Star on GitHub</a>
+        <a class="btn" href="https://github.com/jagdishpal02000/apple-llm/issues">Open an issue</a>
+      </div>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>apple-llm · MIT · macOS 26+ · Apple Silicon</span>
+    <span class="links"><a href="https://github.com/jagdishpal02000/apple-llm#readme">README</a> · <a href="https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/README.md">Node API</a> · <a href="https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/CHANGELOG.md">Changelog</a> · <a href="https://www.npmjs.com/package/apple-llm">npm</a> · <a href="https://pypi.org/project/apple-llm/">PyPI</a></span>
+    <span class="fine">Not affiliated with or endorsed by Apple Inc. Apple, Apple Intelligence, Apple Silicon, macOS and Siri are trademarks of Apple Inc.</span>
+  </div>
+</footer>
+
+<script>
+// Language toggle (Node <-> Python), shared by every tab bar, persisted
+(function(){
+  var root = document.documentElement;
+  function select(lang){
+    if (lang === 'py') root.setAttribute('data-lang','py');
+    else root.removeAttribute('data-lang');
+    document.querySelectorAll('[data-langbtn]').forEach(function(b){
+      b.setAttribute('aria-selected', b.getAttribute('data-langbtn') === lang ? 'true' : 'false');
+    });
+  }
+  try { if (localStorage.getItem('apple-llm-lang') === 'py') select('py'); } catch(e){}
+  document.querySelectorAll('[data-langbtn]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var lang = b.getAttribute('data-langbtn');
+      select(lang);
+      try { localStorage.setItem('apple-llm-lang', lang); } catch(e){}
+    });
+  });
+})();
+// Copy buttons
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var block = btn.closest('.code');
+    var code = block ? block.querySelector('pre').innerText : '';
+    function done(){
+      btn.setAttribute('data-done','1');
+      btn.textContent = 'Copied';
+      setTimeout(function(){ btn.removeAttribute('data-done'); btn.textContent = 'Copy'; }, 1400);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(done).catch(done);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = code; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch(e){}
+      document.body.removeChild(ta); done();
+    }
+  });
+});
+// Theme toggle: auto -> light -> dark -> auto
+(function(){
+  var root = document.documentElement;
+  var btn = document.getElementById('themeBtn');
+  var modes = ['auto','light','dark'];
+  function current(){
+    var t = root.getAttribute('data-theme');
+    return modes.indexOf(t) >= 0 ? t : 'auto';
+  }
+  function apply(m){
+    if (m === 'auto') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', m);
+    btn.textContent = m === 'dark' ? '☾' : m === 'light' ? '☀' : '◐';
+  }
+  try {
+    var saved = localStorage.getItem('apple-llm-theme');
+    if (saved && modes.indexOf(saved) >= 0 && saved !== 'auto') apply(saved);
+  } catch(e){}
+  btn.addEventListener('click', function(){
+    var next = modes[(modes.indexOf(current()) + 1) % modes.length];
+    apply(next);
+    try { localStorage.setItem('apple-llm-theme', next); } catch(e){}
+  });
+})();
+// Live star count; the button reads fine without it
+(function(){
+  var el = document.getElementById('stars');
+  if (!el || !window.fetch) return;
+  fetch('https://api.github.com/repos/jagdishpal02000/apple-llm')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){ if (d && typeof d.stargazers_count === 'number') el.textContent = d.stargazers_count; })
+    .catch(function(){});
+})();
+</script>
+</body>
+</html>

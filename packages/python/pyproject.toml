@@ -5,16 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apple-llm"
 version = "0.2.0"
-description = "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Python. No API key, no account, macOS 26+ on Apple Silicon."
+description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 keywords = ["apple", "llm", "foundation-models", "on-device", "private-cloud-compute",
-            "apple-intelligence", "macos", "local-llm", "structured-output"]
+            "apple-intelligence", "macos", "local-llm", "structured-output",
+            "apple-silicon", "local-ai", "on-device-ai", "offline", "no-api-key",
+            "openai-compatible", "json-schema", "pydantic", "siri"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Framework :: Pydantic :: 2",
+  "Operating System :: MacOS",
   "Operating System :: MacOS :: MacOS X",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -22,11 +26,18 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 # No runtime dependencies. The wheel is pure Python and has no build step, so
 # installing on Linux or an Intel Mac always succeeds; probe() reports why the
 # model is unavailable there rather than failing at install time.
 dependencies = []
+
+[project.urls]
+Homepage = "https://jagdishpal02000.github.io/apple-llm/"
+Repository = "https://github.com/jagdishpal02000/apple-llm"
+Documentation = "https://github.com/jagdishpal02000/apple-llm#readme"
+Issues = "https://github.com/jagdishpal02000/apple-llm/issues"
 
 [project.optional-dependencies]
 pydantic = ["pydantic>=2"]

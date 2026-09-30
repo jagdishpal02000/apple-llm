@@ -8,5 +8,5 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-
-docs/ 
+# private build brief; the rest of docs/ is the GitHub Pages site
+docs/apple-llm-prompt.md
