@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apple-llm — Apple's free LLMs for Node.js and Python</title>
+<meta name="description" content="Call Apple Intelligence's on-device model and, on macOS 27, the Private Cloud Compute model Siri AI runs on, from Node.js and Python. Free, no API key, no model download. OpenAI-compatible server, tool calling, guaranteed JSON.">
+<link rel="canonical" href="https://jagdishpal02000.github.io/apple-llm/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2315140F'/%3E%3Cpath d='M17 40l10-8-10-8' stroke='%23F3F1EC' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='33' y='37' width='14' height='6' rx='1' fill='%23FF6A3D'/%3E%3C/svg%3E">
+<meta property="og:title" content="apple-llm — the free AI already on your Mac">
+<meta property="og:description" content="Apple's on-device and Private Cloud Compute LLMs from Node.js and Python. No API key, no account, no model download.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://jagdishpal02000.github.io/apple-llm/">
+<meta property="og:image" content="https://jagdishpal02000.github.io/apple-llm/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://jagdishpal02000.github.io/apple-llm/og.png">
+<meta name="theme-color" content="#F3F1EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "apple-llm",
+  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node.js and Python. No API key, no account.",
+  "codeRepository": "https://github.com/jagdishpal02000/apple-llm",
+  "programmingLanguage": ["TypeScript", "Python", "Swift"],
+  "runtimePlatform": "macOS 26+ on Apple Silicon",
+  "license": "https://opensource.org/licenses/MIT",
+  "version": "%APPLE_LLM_VERSION%"
+}
+</script>
+<script>
+  // Set the theme before first paint so there is no flash
+  try { var t = localStorage.getItem('apple-llm-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t } catch (e) {}
+  // The terminal replays itself as if typed; hide it until the script takes over
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('typing')
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap">
+<script type="module" src="/src/main.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="mark" href="#top" aria-label="apple-llm home">apple-llm<span class="caret" aria-hidden="true"></span></a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#macos27">macOS 27</a>
+      <a href="#cloud">Cloud</a>
+      <a href="#compare">Compare</a>
+      <a href="#code">Code</a>
+      <a class="nav-gh" href="https://github.com/jagdishpal02000/apple-llm">GitHub <span class="stars" data-stars></span></a>
+      <button class="theme" type="button" data-theme-toggle aria-label="Toggle colour theme"><span aria-hidden="true"></span></button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ─────────────────────────── HERO -->
+<section class="hero wrap" id="top">
+  <p class="kicker">v%APPLE_LLM_VERSION% <i>/</i> npm + PyPI <i>/</i> macOS 26 &amp; 27 on Apple Silicon</p>
+  <h1>Two free LLMs came with your Mac. <em>apple-llm calls both.</em></h1>
+
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <p class="lede">The on-device model behind Apple Intelligence and, on macOS&nbsp;27, the server model Siri&nbsp;AI runs on. Call them from Node.js or Python with no API key, no account and no model download.</p>
+
+      <div class="install" data-install>
+        <div class="install-tabs" role="tablist" aria-label="Install command">
+          <button role="tab" aria-selected="true" data-cmd="npm install apple-llm">npm</button>
+          <button role="tab" aria-selected="false" data-cmd="pip install apple-llm">pip</button>
+          <button role="tab" aria-selected="false" data-cmd="npx apple-llm serve">OpenAI server</button>
+        </div>
+        <div class="install-line">
+          <span class="prompt" aria-hidden="true">$</span>
+          <code data-install-cmd>npm install apple-llm</code>
+          <button class="copy" type="button" data-copy-install>Copy</button>
+        </div>
+      </div>
+
+      <div class="hero-links">
+        <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars></span></a>
+        <a class="link" href="#code">See the code →</a>
+      </div>
+    </div>
+
+    <figure class="term" aria-label="A terminal session running apple-llm probe, a tagging call and a token count">
+      <div class="term-top"><span></span><span></span><span></span><b>zsh — apple-llm</b></div>
+<pre class="term-body" data-term><span class="t-p">$</span> apple-llm probe
+<span class="t-h">on-device</span>
+  variant     AFM 3 Core Advanced
+  context     8192 tokens
+  supports    guidedGeneration, toolCalling, vision
+  use cases   general, contentTagging
+
+<span class="t-h">cloud (private cloud compute)</span>
+  quota       belowLimit
+
+<span class="t-p">$</span> apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"
+<span class="t-o">{"tags": ["sourdough", "rye starter", "cast iron", "dutch oven", "recipe"]}</span>
+
+<span class="t-p">$</span> apple-llm count --system "You are terse." "The quick brown fox…"
+<span class="t-o">64 tokens of 8192 (1%)</span></pre>
+      <figcaption>Real output from a Mac on macOS 27.</figcaption>
+    </figure>
+  </div>
+
+  <dl class="facts">
+    <div><dt>API cost</dt><dd>$0</dd></div>
+    <div><dt>On-device call, warm</dt><dd>0.3–2s</dd></div>
+    <div><dt>Context, device / cloud</dt><dd>8k <small>/</small> 32k</dd></div>
+    <div><dt>Runtime dependencies</dt><dd>0</dd></div>
+  </dl>
+</section>
+
+<!-- ─────────────────────────── 01 MACOS 27 -->
+<section class="sec wrap" id="macos27">
+  <p class="sec-label"><span>01</span> What macOS 27 changed</p>
+  <div class="split">
+    <div class="split-head">
+      <h2>macOS 27 is when the free models <em>got good.</em></h2>
+      <p>macOS 26 introduced the on-device model. macOS 27 doubled its context window, gave it eyes and tools, and swapped the cloud model for a much bigger one. apple-llm supports all of it.</p>
+      <p class="aside">macOS 26 still works, with a 4,096-token window and without these additions.</p>
+    </div>
+    <ol class="changes">
+      <li>
+        <p class="chg-tag tier-cloud">cloud</p>
+        <h3>Siri AI's model, in the cloud tier</h3>
+        <p>Golden Gate replaced the cloud model with Apple's next-generation server model, the one Siri&nbsp;AI runs on. It reasons, reads images, holds 32,768 tokens and can search the live web.</p>
+      </li>
+      <li>
+        <p class="chg-tag tier-device">device</p>
+        <h3>Twice the context <span class="delta"><s>4,096</s> → 8,192 tokens</span></h3>
+        <p>Enough for a long email thread, a meeting transcript or a few documents in a single prompt.</p>
+      </li>
+      <li>
+        <p class="chg-tag tier-device">device</p>
+        <h3>Images, on device</h3>
+        <p>Pass a photo, scan or screenshot by path. Nothing leaves the machine.</p>
+      </li>
+      <li>
+        <p class="chg-tag tier-device">device</p>
+        <h3>Apple's own tools</h3>
+        <p>The model can call Apple's on-device OCR, barcode reader and Spotlight's semantic index, which gives you local RAG over your own files.</p>
+      </li>
+      <li>
+        <p class="chg-tag tier-device">device</p>
+        <h3>Tokens you can count</h3>
+        <p>Count a prompt before you send it, and get input, output and cached token usage back from every call.</p>
+      </li>
+      <li>
+        <p class="chg-tag tier-both">both</p>
+        <h3>A framework that describes itself</h3>
+        <p><code>probe()</code> reports the model variant, what it supports and whether your cloud quota is spent, read straight from the framework rather than from the docs.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 02 CLOUD -->
+<section class="cloud" id="cloud">
+  <div class="wrap">
+    <p class="sec-label"><span>02</span> The cloud model</p>
+    <h2>Apple's big model, from a plain Node or Python script. <em>No other package we found gets there.</em></h2>
+
+    <div class="cloud-grid">
+      <div class="cloud-story">
+        <p>On macOS 27, <code>PrivateCloudComputeLanguageModel</code> is public API and reports itself available. Then every call fails with <code>ModelManagerError 1046</code>, unless your binary carries a managed entitlement that Apple grants only to signed apps in the App Store Small Business Program.</p>
+        <p>apple-llm takes a different route. Shortcuts already holds that entitlement, so <code>apple-llm setup-cloud</code> builds a shortcut and signs it on your Mac. Nothing is pre-signed, hosted or downloaded, and there's no developer account.</p>
+      </div>
+
+      <div class="routes" role="img" aria-label="Diagram: calling Private Cloud Compute directly fails with ModelManagerError 1046; apple-llm goes through a shortcut signed on your Mac and reaches it.">
+        <div class="route no">
+          <p class="route-name">Direct API</p>
+          <ol>
+            <li>your script</li>
+            <li><code>PrivateCloudComputeLanguageModel</code></li>
+            <li class="end">✕ ModelManagerError 1046</li>
+          </ol>
+        </div>
+        <div class="route yes">
+          <p class="route-name">apple-llm</p>
+          <ol>
+            <li>your script</li>
+            <li>a shortcut, signed on your Mac</li>
+            <li class="end">✓ Private Cloud Compute</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <dl class="cloud-spec">
+      <div><dt>Reasoning</dt><dd>Yes</dd></div>
+      <div><dt>Images</dt><dd>Yes</dd></div>
+      <div><dt>Context</dt><dd>32,768 tokens</dd></div>
+      <div><dt>Web search</dt><dd>Optional</dd></div>
+      <div><dt>Price</dt><dd>Free, per-device quota</dd></div>
+      <div><dt>Privacy</dt><dd class="warn">Your prompt leaves the Mac</dd></div>
+    </dl>
+
+    <div class="cloud-code">
+<pre><code data-lang="sh">apple-llm setup-cloud --web-search   # once: builds and signs the shortcut
+apple-llm run --tier cloud "Plan a 3-day Lisbon trip on a budget."</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 03 COMPARE -->
+<section class="sec wrap" id="compare">
+  <p class="sec-label"><span>03</span> Compared</p>
+  <div class="split split-top">
+    <div class="split-head">
+      <h2>How it stacks up.</h2>
+      <p>Good packages exist for the on-device model, and the table gives them their due. Apple's cloud model is the part none of the others reach.</p>
+    </div>
+  </div>
+
+  <p class="scroll-hint" aria-hidden="true">Swipe the table to see the other packages →</p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Comparison table, scrolls sideways on small screens">
+    <table class="cmp">
+      <thead>
+        <tr>
+          <th scope="col"><span class="sr">Feature</span></th>
+          <th scope="col" class="us">apple-llm<small>Node + Python</small></th>
+          <th scope="col"><a href="https://github.com/apple/python-apple-fm-sdk">apple-fm-sdk</a><small>Apple · Python</small></th>
+          <th scope="col"><a href="https://github.com/codybrom/tsfm">tsfm-sdk</a><small>Node</small></th>
+          <th scope="col"><a href="https://github.com/Meridius-Labs/apple-on-device-ai">apple-on-device-ai</a><small>Node</small></th>
+          <th scope="col"><a href="https://github.com/scouzi1966/maclocal-api">afm</a><small>CLI + HTTP server</small></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">On-device model</th><td class="us y">Yes</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td><td class="y">Yes</td></tr>
+        <tr class="key"><th scope="row">Apple's cloud model (PCC)</th><td class="us y">Yes, free, no entitlement</td><td class="n">No</td><td class="n">No<sup>1</sup></td><td class="n">No</td><td class="n">No</td></tr>
+        <tr><th scope="row">Library for Node.js</th><td class="us y">Yes</td><td class="n">No</td><td class="y">Yes</td><td class="y">Yes</td><td class="m">Via HTTP</td></tr>
+        <tr><th scope="row">Library for Python</th><td class="us y">Yes</td><td class="y">Yes</td><td class="n">No</td><td class="n">No</td><td class="m">Via HTTP</td></tr>
+        <tr><th scope="row">OpenAI-compatible server</th><td class="us y">Yes</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
+        <tr><th scope="row">Vercel AI SDK provider</th><td class="us y">Yes, v6 &amp; v7</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td><td class="n">No</td></tr>
+        <tr><th scope="row">Runs other models (MLX)</th><td class="us n">No</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
+        <tr><th scope="row">Latest release</th><td class="us">Sep 2026</td><td>Jun 2026</td><td>Sep 2026</td><td>Aug 2025</td><td>Sep 2026</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="notes">
+    <p><sup>1</sup> tsfm has merged Private Cloud Compute support on a branch, unreleased as of 30 Sep 2026. It needs the <code>com.apple.developer.private-cloud-compute</code> entitlement on a signed host app, so it doesn't work from plain <code>node</code>. Apple's own <code>fm</code> command-line tool needs a machine-wide <code>sudo fm license</code> first.</p>
+    <p>Checked against each project's README, npm and PyPI on 30 September 2026. <a href="https://github.com/jagdishpal02000/apple-llm/issues">Spotted a mistake? Open an issue.</a></p>
+    <p><strong>Not in the table:</strong> Ollama, LM Studio and MLX run open-weights models that you download and choose. They're the better pick for code and long reasoning. apple-llm uses the models already on your Mac, and plenty of people run both.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 04 CODE -->
+<section class="sec wrap" id="code">
+  <p class="sec-label"><span>04</span> Code</p>
+  <div class="split split-top">
+    <div class="split-head">
+      <h2>Five ways in.</h2>
+      <p>A library for each language, a drop-in OpenAI endpoint, a Vercel AI SDK provider and a CLI. One client covers both tiers, and <code>auto</code> prefers the device.</p>
+    </div>
+  </div>
+
+  <div class="codebox" data-tabs>
+    <div class="codebox-tabs" role="tablist" aria-label="Code examples">
+      <button role="tab" aria-selected="true" aria-controls="p-node" id="t-node">Node</button>
+      <button role="tab" aria-selected="false" aria-controls="p-py" id="t-py">Python</button>
+      <button role="tab" aria-selected="false" aria-controls="p-srv" id="t-srv">OpenAI server</button>
+      <button role="tab" aria-selected="false" aria-controls="p-ai" id="t-ai">AI SDK</button>
+      <button role="tab" aria-selected="false" aria-controls="p-cli" id="t-cli">CLI</button>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-node" aria-labelledby="t-node">
+<pre><code data-lang="ts">import { AppleLLM, tool } from 'apple-llm';
+import { z } from 'zod';
+
+const llm = new AppleLLM(); // 'auto': the device when it can, else the cloud
+
+// Guaranteed shape on device: the decoder cannot produce anything else
+const Contact = z.object({ name: z.string(), email: z.string().email() });
+const contact = await llm.json('Reach Grace at grace@navy.mil', { schema: Contact });
+
+// Your own functions, called mid-generation
+const getWeather = tool({
+  name: 'getWeather',
+  description: 'Current weather for a city',
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }) =&gt; ({ city, tempC: 21, sky: 'sunny' }),
+});
+await llm.text('Do I need an umbrella in Paris?', { tools: [getWeather] });
+
+// Stream; breaking out of the loop stops the model
+for await (const delta of llm.stream('Write a haiku about bridges')) {
+  process.stdout.write(delta);
+}</code></pre>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-py" aria-labelledby="t-py" hidden>
+<pre><code data-lang="py">from apple_llm import AppleLLM
+from pydantic import BaseModel   # optional: pip install 'apple-llm[pydantic]'
+
+class Person(BaseModel):
+    name: str
+    born: int
+
+with AppleLLM(tier="device") as llm:
+    person = llm.json("Ada Lovelace, born 1815.", schema=Person)
+    print(person.born)  # 1815, a validated Person rather than a dict
+
+    llm.text("Read the total.", images=["receipt.png"], tools=["ocr"])
+    llm.stream("Count to three.", on_delta=print)
+
+with AppleLLM(tier="cloud") as cloud:  # after: apple-llm setup-cloud
+    cloud.text("Solve this step by step: ...")</code></pre>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-srv" aria-labelledby="t-srv" hidden>
+<pre><code data-lang="sh">npx apple-llm serve   # OpenAI-compatible API at http://127.0.0.1:11436/v1
+# options: --port 11436  --api-key &lt;key&gt;  --cors &lt;origin&gt;  --tier cloud</code></pre>
+<pre><code data-lang="py">from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11436/v1", api_key="unused")
+client.chat.completions.create(
+    model="apple-on-device",  # or "apple-private-cloud"
+    messages=[{"role": "user", "content": "Tag this: sourdough with a rye starter"}],
+)</code></pre>
+      <p class="codebox-note">Works with the official SDKs, LangChain, LlamaIndex, Open WebUI and editor plugins. It supports streaming, tools, JSON Schema <code>response_format</code> and images, and binds to localhost only.</p>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-ai" aria-labelledby="t-ai" hidden>
+<pre><code data-lang="ts">import { generateText } from 'ai';
+import { apple } from 'apple-llm/ai-sdk';
+
+const { text } = await generateText({
+  model: apple(), // on device; apple('cloud') for Private Cloud Compute
+  prompt: 'Write a one-line release note for a bug fix.',
+});</code></pre>
+      <p class="codebox-note">AI SDK 6 and 7: <code>generateText</code>, <code>streamText</code>, <code>generateObject</code>, multi-step tools, images and abort signals.</p>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-cli" aria-labelledby="t-cli" hidden>
+<pre><code data-lang="sh">apple-llm chat                                     # interactive, streamed
+apple-llm run --schema person.json "Ada, 1815"     # guaranteed JSON
+apple-llm run --tool ocr --image receipt.png "Read the total."
+apple-llm run --session trip "My cat is Biscuit."
+apple-llm rewrite "gonna grab a bite"              # also proofread, summarize, draft
+apple-llm ask-screen "Summarize what is on this schedule."
+apple-llm count --system "You are terse." -        # tokens before sending</code></pre>
+      <p class="codebox-note">The pip and npm packages install the same <code>apple-llm</code> command; <code>chat</code> and <code>serve</code> come with npm.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 05 FIT -->
+<section class="sec wrap" id="fit">
+  <p class="sec-label"><span>05</span> Fit</p>
+  <div class="split">
+    <div class="split-head">
+      <h2>Small model, <em>right jobs.</em></h2>
+      <p>The on-device model is roughly 20B sparse with 1–4B active. Used for what it's good at, it's fast, private and free. No amount of prompting makes it good at the rest.</p>
+    </div>
+    <div class="fit">
+      <div>
+        <h3 class="fit-yes">Reach for it</h3>
+        <ul>
+          <li>Classifying, tagging and extracting topics</li>
+          <li>Pulling fields out of text into guaranteed JSON</li>
+          <li>Reading receipts and screenshots</li>
+          <li>Rewriting, proofreading and summarising</li>
+          <li>Private data that shouldn't leave the Mac</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="fit-no">Reach past it</h3>
+        <ul>
+          <li>Writing code: use a bigger model</li>
+          <li>Long reasoning: use the cloud tier</li>
+          <li>Inputs over 8k tokens: use the cloud tier</li>
+          <li>Linux, Windows or Intel Macs: not supported</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 06 NOTES -->
+<section class="sec wrap" id="notes">
+  <p class="sec-label"><span>06</span> Field notes</p>
+  <div class="split split-top">
+    <div class="split-head">
+      <h2>Fifteen constraints, <em>found the expensive way.</em></h2>
+      <p>The package is mostly these, written down as working code so nobody has to find them again. Six of them:</p>
+    </div>
+  </div>
+  <ol class="notes-grid">
+    <li>
+      <h3>Never set <code>temperature: 0</code></h3>
+      <p>Greedy decoding under a schema degenerates. One run padded an array forever, then wrote 2.7KB of <code>"tasks-tasks-tasks-…"</code> inside a single string.</p>
+      <p class="metric"><s>2s</s> → 20s per call. Default is 0.4.</p>
+    </li>
+    <li>
+      <h3>One process, not one per call</h3>
+      <p>Spawning a helper per request makes every call pay for loading the model again. One long-lived helper keeps it resident.</p>
+      <p class="metric">~17s → ~1.5s per call</p>
+    </li>
+    <li>
+      <h3>Concurrency buys nothing</h3>
+      <p>Apple serialises inference. Four concurrent requests took as long as four sequential ones, so the queue serialises on purpose.</p>
+      <p class="metric">29.19s parallel vs 29.45s sequential</p>
+    </li>
+    <li>
+      <h3>Every <code>pattern</code> is rejected</h3>
+      <p>Even <code>^[A-Z]{3}$</code> fails with <code>UnsupportedGuide</code>, and Zod adds one to <code>.email()</code>. Patterns are stripped for the decoder and checked on the reply instead.</p>
+      <p class="metric">1 of 9 schema-dialect rules</p>
+    </li>
+    <li>
+      <h3>A schema mistake is invisible</h3>
+      <p>Collapsing a number-or-string union to <code>string</code> made it impossible for the model to emit a status code. It wrote <code>": 201"</code> instead, with no error anywhere.</p>
+      <p class="metric">Wrong answer, no warning</p>
+    </li>
+    <li>
+      <h3><code>WFLLMPrompt</code>, not <code>WFInput</code></h3>
+      <p>With the wrong key, the shortcut imports fine, silently discards the prompt, then blocks forever on an interactive panel.</p>
+      <p class="metric">The most expensive bug available</p>
+    </li>
+  </ol>
+  <p class="more"><a class="link" href="https://github.com/jagdishpal02000/apple-llm#what-this-package-really-is">All of them, with measurements, in the README →</a></p>
+</section>
+
+<!-- ─────────────────────────── 07 FAQ -->
+<section class="sec wrap" id="faq">
+  <p class="sec-label"><span>07</span> Questions</p>
+  <dl class="faq">
+    <div>
+      <dt>Is it really free?</dt>
+      <dd>Yes. The on-device model has no key and no limits. The cloud tier is free too, within a per-device quota from Apple; <code>probe()</code> reports whether you're under it, and running out raises a <code>QuotaError</code>.</dd>
+    </div>
+    <div>
+      <dt>Is it private?</dt>
+      <dd>The device tier is: nothing leaves your Mac. The cloud tier sends your prompt to Apple's Private Cloud Compute. <code>auto</code> uses the device whenever it can.</dd>
+    </div>
+    <div>
+      <dt>What do I need?</dt>
+      <dd>macOS 26 or 27 on Apple Silicon, with Apple Intelligence on, plus the Xcode Command Line Tools (<code>xcode-select --install</code>). Full Xcode isn't needed. On anything else it installs but reports why it can't run.</dd>
+    </div>
+    <div>
+      <dt>Does Python have everything Node has?</dt>
+      <dd>Not yet. Python has text, JSON with pydantic, streaming, sessions, images, Apple's built-in tools and the writing presets. Your own function tools, Zod, the server and the AI SDK provider are npm-only for now.</dd>
+    </div>
+  </dl>
+</section>
+
+<!-- ─────────────────────────── END -->
+<section class="end wrap">
+  <h2>Try it in <em>thirty seconds.</em></h2>
+  <div class="end-cmds">
+<pre><code data-lang="sh">npm install apple-llm && npx apple-llm probe</code></pre>
+  </div>
+  <p>If it saves you an API bill, a star helps other Mac developers find it.</p>
+  <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars></span></a>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <p class="mark">apple-llm<span class="caret" aria-hidden="true"></span></p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/jagdishpal02000/apple-llm#readme">README</a>
+      <a href="https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/README.md">Node API</a>
+      <a href="https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/CHANGELOG.md">Changelog</a>
+      <a href="https://www.npmjs.com/package/apple-llm">npm</a>
+      <a href="https://pypi.org/project/apple-llm/">PyPI</a>
+      <a href="https://github.com/jagdishpal02000/apple-llm/issues">Issues</a>
+    </nav>
+    <p class="fine">v%APPLE_LLM_VERSION% · MIT licensed. An independent project, not affiliated with or endorsed by Apple Inc. Apple, Apple Intelligence, macOS and Siri are trademarks of Apple Inc.</p>
+  </div>
+</footer>
+</body>
+</html>
