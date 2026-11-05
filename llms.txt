@@ -1,0 +1,681 @@
+# apple-llm: integration guide for AI agents
+
+> Integrate Apple's on-device LLM, text to speech (TTS), and speech to text
+> (STT) into a project with Node.js, Python, a CLI, or a local HTTP server.
+> No API key or account is needed. Inference requires macOS 26+ on Apple Silicon.
+
+This is the self-contained agent reference for the apple-llm 0.3 API. Read it
+before writing an integration. Check the installed package version and runtime
+capabilities; features depend on the Mac and macOS release.
+
+- Website: https://jagdishpal02000.github.io/apple-llm/
+- Shareable guide: https://jagdishpal02000.github.io/apple-llm/llms.txt
+- Raw source: https://raw.githubusercontent.com/jagdishpal02000/apple-llm/main/llms.txt
+- Repository: https://github.com/jagdishpal02000/apple-llm
+- npm package: `apple-llm`; imports from `apple-llm`.
+- PyPI package: `apple-llm`; imports from `apple_llm`.
+
+## How to use this file
+
+Give an agent the guide URL, attach this file, or paste its contents into the
+agent's project context. Example request:
+
+"Read https://jagdishpal02000.github.io/apple-llm/llms.txt and integrate
+apple-llm into this project for local LLM, TTS, and STT. Use the existing
+language and architecture, keep processing on device, check availability,
+and include setup instructions and a smoke test."
+
+This URL supplies documentation. It is not an MCP server endpoint, and
+apple-llm does not currently ship an MCP server or an `mcp` CLI command.
+An agent can use the SDK, run the CLI, or call the HTTP API directly. If the
+host requires MCP, implement a separate adapter with the host's MCP SDK and
+wrap the documented functions as tools; do not register this text URL as an
+MCP transport. Suggested mappings: `generate_text` to `llm.text()`,
+`synthesize_speech` to `synthesize()`, and `transcribe_audio` to `transcribe()`.
+The adapter and apple-llm must execute on a supported Mac.
+
+## Integration workflow
+
+1. Inspect the target project's language, runtime, and existing AI/audio code.
+2. Choose the smallest integration: Node SDK, Python SDK, CLI, or HTTP server.
+3. Check the machine requirements below. Use the speech probe independently
+   of the LLM probe when only TTS/STT is needed.
+4. Use `tier: 'device'` / `tier="device"` for a local-only LLM. The SDK default
+   `auto` can select cloud when the device is unavailable and cloud is set up.
+5. Keep clients alive, provide cleanup, handle typed errors, and surface setup
+   failures to the user. Do not silently switch a local-only project to cloud.
+6. Verify one short text request, one synthesized file, and one transcription
+   as applicable. Microphone capture is a separate, user-initiated feature.
+
+## Requirements and execution location
+
+| Requirement | Local LLM | TTS and STT |
+| --- | --- | --- |
+| macOS 26+ on Apple Silicon | Required | Required |
+| Xcode Command Line Tools (`xcode-select --install`) | Required | Required |
+| Apple Intelligence enabled and model ready | Required | Not required |
+| Apple account, API key, full Xcode, developer membership | Not required | Not required |
+| Internet during normal on-device processing | Not required once assets are installed | Not required once speech language assets are installed |
+
+Node requires Node.js >=18; Python requires Python >=3.10. Both packages have
+zero required runtime dependencies. Pydantic, schema libraries, OpenAI clients,
+and the Vercel AI SDK are optional integrations installed separately.
+
+Imports and installation work on unsupported platforms; inference does not.
+There is no Linux, Windows, Intel Mac, or automatic alternate-model backend.
+Run the SDK in a native Mac process, not a Linux container, browser bundle,
+edge runtime, or Linux serverless function. Other runtimes can call an HTTP
+server running on a supported Mac; `127.0.0.1` always means the caller's host.
+
+Both packages compile a small Swift helper on first use, not at install time.
+The cached binary is shared between Node and Python under
+`~/Library/Caches/apple-llm/bin/`. Allow time for the first compilation;
+`onProgress` / `on_progress` can report progress. Do not depend on `/usr/bin/fm`,
+an Ollama installation, a model download from Hugging Face, or a paid license.
+
+## Installation and discovery
+
+Install the binding that matches the project:
+
+```sh
+npm install apple-llm
+# Python alternative:
+python -m pip install apple-llm
+```
+
+CLI discovery (the Node executable can run without a global install):
+
+```sh
+npx apple-llm probe --json
+npx apple-llm voices --json
+npx apple-llm languages --json
+```
+
+In Python projects, the pip package installs `apple-llm`; use
+`apple-llm probe --json`. The HTTP `serve` command is Node-only.
+
+```js
+import { probe, probeSpeech } from 'apple-llm';
+
+const models = await probe();
+const speech = await probeSpeech();
+console.log(models.device.available, models.device.reason);
+console.log(speech.available, speech.reason);
+```
+
+```python
+from apple_llm import probe, probe_speech
+
+models = probe()
+speech = probe_speech()
+print(models["device"]["available"], models["device"].get("reason"))
+print(speech["available"], speech.get("reason"))
+```
+
+`probe()` reports `device` and `cloud`, including availability and setup
+information. Use the device's `contextSize` and reported capabilities rather
+than hardcoding a model's abilities. `probeSpeech()` / `probe_speech()` reports
+speech availability, voices, languages, and defaults. An unavailable LLM does
+not mean speech is unavailable.
+
+## Node.js / TypeScript: local LLM
+
+The package supports ESM and CommonJS. The following ESM example also works as
+an `.mjs` file. Keep one client for the application's lifetime and close it on
+shutdown; this example closes it after the requests.
+
+```js
+import { AppleLLM } from 'apple-llm';
+
+const llm = new AppleLLM({ tier: 'device', timeoutMs: 30_000 });
+try {
+  const text = await llm.text('Summarize: The meeting moved to Friday.', {
+    system: 'Answer in one short sentence.',
+    maxTokens: 128,
+  });
+  console.log(text);
+
+  const contact = await llm.json('Ada Lovelace was born in 1815.', {
+    schema: {
+      type: 'object',
+      properties: { name: { type: 'string' }, born: { type: 'integer' } },
+      required: ['name', 'born'],
+      additionalProperties: false,
+    },
+  });
+  console.log(contact);
+
+  for await (const delta of llm.stream('Write a short greeting.')) {
+    process.stdout.write(delta);
+  }
+  process.stdout.write('\n');
+} finally {
+  llm.close();
+}
+```
+
+- `text(input, options?)` returns a string.
+- `json(input, { schema, ...options })` returns the parsed object. Plain JSON
+  Schema works without extra dependencies. Zod 4 / Standard Schema adds typed
+  validation; import Zod from a separately installed `zod` package.
+- `generate(input, options?)` returns `text`, `object`, `message`, `usage`,
+  `finishReason`, `toolCalls`, `tier`, and `trimmedTurns`.
+- `stream()` supports async iteration, awaiting the full text, and `.result`
+  for metadata. `streamJson()` yields partial objects; validate/use the final
+  object before committing downstream changes.
+- Input may be a prompt string or a list of `{ role, content }` chat messages.
+  Append `result.message` to history; `trimHistory` defaults to true for message
+  lists. Use `trimHistory: false` to fail instead of dropping old turns.
+- `llm.conversation('thread-id', { system: '...' })` maintains a named device
+  conversation; its `.text()` and `.json()` methods continue that thread.
+- Options include `system`, `temperature`, `maxTokens`, `timeoutMs`, `signal`,
+  `images`, `documents`, `sessionId`, `tools`, `maxToolCalls`, `useCase`,
+  `guardrails`, `sampling`, and cloud-only `webSearch`.
+- `llm.countTokens(input)` returns `{ tokens, contextSize }` on supported OS
+  versions. `llm.prewarm()` loads assets. Do not assume token usage is reported
+  on every tier/OS.
+
+### Node function tools
+
+Use custom tools on device. `execute` runs in your application process. This
+example uses optional Zod 4 (`npm install zod`) to infer and validate arguments:
+
+```js
+import { AppleLLM, tool } from 'apple-llm';
+import { z } from 'zod';
+
+const lookupStatus = tool({
+  name: 'lookupStatus',
+  description: 'Look up the status of a support ticket by ID.',
+  parameters: z.object({ id: z.string() }),
+  execute: async ({ id }) => ({ id, status: 'open' }),
+});
+const llm = new AppleLLM({ tier: 'device' });
+try {
+  const result = await llm.generate('What is the status of ticket A123?', {
+    tools: [lookupStatus],
+  });
+  console.log(result.text, result.toolCalls);
+} finally {
+  llm.close();
+}
+```
+
+Replace the example lookup with the project's own data access. Without
+`execute`, generation returns pending tool calls with
+`finishReason: 'tool-calls'`; execute them in the host and return tool messages
+to continue. Built-in tools are `ocr`, `barcode`, and `spotlight`, where the OS
+supports them. Generic JavaScript function tools are not Python features.
+
+## Python: local LLM
+
+```python
+from apple_llm import AppleLLM
+
+with AppleLLM(tier="device") as llm:
+    text = llm.text(
+        "Summarize: The meeting moved to Friday.",
+        system="Answer in one short sentence.",
+        max_tokens=128,
+    )
+    print(text)
+    contact = llm.json("Ada Lovelace was born in 1815.", schema={
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "born": {"type": "integer"}},
+        "required": ["name", "born"],
+        "additionalProperties": False,
+    })
+    print(contact)
+    llm.stream("Write a short greeting.", on_delta=lambda s: print(s, end="", flush=True))
+    print()
+```
+
+Python `stream()` returns the completed string and emits deltas through
+`on_delta`; it is not Node's async iterator API. `json()` accepts a dict schema
+or a Pydantic v2 `BaseModel` subclass and returns a validated model instance
+for the latter. Install the optional extra with
+`python -m pip install 'apple-llm[pydantic]'`.
+
+```python
+import asyncio
+from apple_llm import AsyncAppleLLM
+
+async def main():
+    async with AsyncAppleLLM(tier="device") as llm:
+        print(await llm.text("Write a short greeting."))
+
+asyncio.run(main())
+```
+
+Python uses snake_case options: `max_tokens`, `session_id`, `use_case`,
+`web_search`, and `on_progress`. Conversations use
+`llm.conversation('thread-id', system='...')`. Images, text documents, built-in
+tools, `count_tokens()`, `prewarm()`, and writing helpers are supported. Do not
+port Node-only message-list, `generate()`, `streamJson()`, function tool, or
+AbortSignal APIs verbatim to Python.
+
+## Text to speech: playback and audio files
+
+`speak()` plays on the Mac running the code. For a browser, remote client, or
+download, use `synthesize()` or the HTTP speech endpoint and play the returned
+audio in that client.
+
+```js
+import { AppleSpeech } from 'apple-llm';
+
+const speech = new AppleSpeech();
+try {
+  console.log(await speech.voices({ language: 'en', novelty: false }));
+  await speech.speak('Hello there');
+  const made = await speech.synthesize('Hello there', { format: 'wav' });
+  console.log(made.audio.length, made.duration); // Buffer; seconds
+  const saved = await speech.synthesize('A longer article.', { out: 'article.m4a' });
+  console.log(saved.path); // file result, no audio Buffer
+} finally {
+  speech.close();
+}
+```
+
+```python
+from apple_llm import AppleSpeech
+
+with AppleSpeech() as speech:
+    print(speech.voices(language="en", novelty=False))
+    speech.speak("Hello there")
+    made = speech.synthesize("Hello there", format="wav")
+    print(len(made.audio), made.duration)  # bytes; seconds
+    saved = speech.synthesize("A longer article.", out="article.m4a")
+    print(saved.path)
+```
+
+Convenience exports share a default speech helper: Node `speak`, `synthesize`,
+`listVoices`, `systemVoice`; Python `speak`, `synthesize`, `list_voices`,
+`system_voice`. Explicit `AppleSpeech` instances give each workload its own
+helper and cleanup. Python also has awaitable `AsyncAppleSpeech`.
+
+TTS options: `voice` (installed name/id, or `system`), `language`, `speed`
+(1 = normal), `pitch` (0.5–2), `volume` (0–1), and `ssml`. Synthesis adds
+`format`, `out`, `words`, and `sampleRate` (Python `sample_rate`). Installed
+voices vary: list them before hardcoding a name. Omit `voice` for the System
+voice or use `language` to select one. Unknown voices raise `UnsupportedError`.
+
+Output formats: `wav`, `m4a`, `aac`, `flac`, `aiff`, `caf`, `pcm`. The byte
+default is WAV; a file's extension selects its format unless overridden.
+PCM is raw 16-bit little-endian mono. Parse WAV chunks instead of assuming a
+44-byte header. Prefer `out` for long text to avoid holding all audio in memory.
+Direct SDK/CLI MP3, Ogg, and Opus encoding is unsupported.
+
+`avspeech` voices support pitch, volume, SSML, and rendered word timings.
+`say` voices support speed but not those controls. They can lose words during
+concurrent LLM activity, so file synthesis verifies two renders. Siri voices
+cannot be selected by name; selecting one as the macOS System voice may work
+with `voice: 'system'`, but that path is unverified. Do not promise it.
+
+The package is MIT licensed. System voices are subject to Apple's separate
+macOS license; do not infer permission to distribute synthesized audio from
+the package license. See the repository's existing voice-license notes:
+https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices
+
+## Speech to text: recordings, subtitles, and microphone
+
+```js
+import { AppleSpeech, toSRT, toVTT } from 'apple-llm';
+
+const speech = new AppleSpeech();
+try {
+  const result = await speech.transcribe('meeting.m4a', {
+    language: 'en-US',
+    words: true,
+    hints: ['Kubernetes', 'Postgres'],
+  });
+  console.log(result.text, result.segments, result.language, result.engine);
+  console.log(toSRT(result), toVTT(result));
+} finally {
+  speech.close();
+}
+```
+
+```python
+from apple_llm import AppleSpeech
+
+with AppleSpeech() as speech:
+    result = speech.transcribe(
+        "meeting.m4a", language="en-US", words=True,
+        hints=["Kubernetes", "Postgres"],
+    )
+    print(result.text, result.segments, result.language, result.engine)
+    print(result.to_srt(), result.to_vtt())
+```
+
+Input can be a file path or encoded file bytes; pass `filename` for bytes
+whose format is ambiguous. macOS reads WAV, AIFF, CAF, MP3, M4A, AAC, FLAC,
+and MP4/MOV video. Convert WebM, Ogg, or MKV first. Browser recordings often
+use WebM/Opus: select a supported recording format or convert before upload;
+renaming a file does not convert it.
+
+There is no language autodetection. Pass `language`, e.g. `en-US` or `en`;
+the default is the Mac's language. Missing recognition assets download on
+first use unless `download: false` / `download=False` is set. Available
+languages and engines vary by OS. `engine` is `transcriber` or `dictation`.
+Language APIs: Node `listSpeechLanguages`, `installSpeechLanguage`,
+`removeSpeechLanguage`; Python `list_speech_languages`,
+`install_speech_language`, `remove_speech_language`.
+
+Segments include text and start/end seconds. `words: true` / `words=True`
+adds word timings/confidence. Node `onSegment` / Python `on_segment` reports
+finished segments; `onProgress` / `on_progress` reports operation progress.
+Node `transcribeStream()` yields finished segments with async iteration;
+it processes an existing recording, not uploaded live audio chunks.
+
+One utterance from the Mac's microphone:
+
+```js
+import { listen } from 'apple-llm';
+const text = await listen({ language: 'en-US', silence: 1.5, maxSeconds: 30 });
+console.log(text); // string, not Transcript
+```
+
+```python
+from apple_llm import listen_once
+result = listen_once(language="en-US", silence=1.5, max_seconds=30)
+print(result.text)  # listen_once returns a Transcript
+```
+
+For continuous recognition, Node `listen({ continuous: true })` returns a
+session that is async iterable over `{ text, final, start, end, ... }` events.
+Call `session.stop()` to keep the transcript or `session.abort()` to cancel.
+Python `with listen(continuous=True) as session:` is synchronously iterable;
+use `session.stop()` or `session.cancel()`. Partial (`final: false`) events
+replace the previous guess; do not append every partial to the transcript.
+macOS requests microphone access for the launching app; a denial raises
+`PermissionDeniedError`. The microphone hears speaker playback too.
+
+## Local voice assistant: STT to LLM to TTS
+
+This runnable Node example handles one spoken question. Use headphones.
+
+```js
+import { AppleLLM, AppleSpeech } from 'apple-llm';
+
+const llm = new AppleLLM({ tier: 'device' });
+const speech = new AppleSpeech();
+try {
+  const question = await speech.listen({ language: 'en-US', maxSeconds: 30 });
+  if (question.trim()) {
+    const answer = await llm.text(question, {
+      system: 'Answer in one or two short sentences.', maxTokens: 128,
+    });
+    await speech.speak(answer);
+  }
+} finally {
+  speech.close();
+  llm.close();
+}
+```
+
+## HTTP integration: OpenAI-compatible server
+
+Start the Node server on the Mac; keep it running while the client connects:
+
+```sh
+npx apple-llm serve --host 127.0.0.1 --port 11436 --tier device
+```
+
+- OpenAI base URL: `http://127.0.0.1:11436/v1`.
+- Local model ID: `apple-on-device`.
+- Optional cloud model ID: `apple-private-cloud` (requires cloud setup).
+- SDK API key: any nonempty value, such as `unused`, unless server
+  `--api-key <key>` requires the matching `Authorization: Bearer <key>`.
+- `--tier device` chooses the default; an explicit `apple-private-cloud`
+  request still selects cloud. Use the local model ID for local requests.
+- CORS is off by default; `--cors http://localhost:5173` allows that frontend
+  origin. Browser code calls this API, rather than importing the Node SDK.
+- To serve another machine, bind an appropriate interface with `--host` and
+  configure authentication/network access. Use the Mac's reachable hostname
+  from that client. A static website does not host Mac inference.
+
+```sh
+curl http://127.0.0.1:11436/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"apple-on-device","messages":[{"role":"user","content":"Write a short greeting."}],"max_tokens":128}'
+
+curl http://127.0.0.1:11436/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tts-1","voice":"alloy","input":"Hello there","response_format":"wav"}' \
+  --output hello.wav
+
+curl http://127.0.0.1:11436/v1/audio/transcriptions \
+  -F model=whisper-1 -F file=@hello.wav -F language=en -F response_format=json
+```
+
+`tts-1` and `whisper-1` are client-compatible labels; audio endpoints ignore
+`model` and use macOS speech, not OpenAI's hosted models.
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /v1/models` | Lists the two model IDs, not proof that either is available |
+| `GET /health` or `/v1/health` | LLM availability; can return 503 while speech still works |
+| `POST /v1/chat/completions` | Chat, SSE with `stream: true`, tools, images, JSON Schema, `seed`, `top_p` |
+| `GET /v1/audio/voices` | `{ object: 'list', data: [...] }` of installed macOS voices |
+| `POST /v1/audio/speech` | JSON `input`, optional `voice`, `speed`, `response_format`; binary audio response |
+| `POST /v1/audio/transcriptions` | Multipart `file`, optional `language`, `prompt`, `response_format`, `timestamp_granularities[]` |
+
+For constrained chat JSON, send
+`response_format: { type: 'json_schema', json_schema: { name: 'Result', schema: ... } }`.
+Tool calls are OpenAI-style; the HTTP client runs its own tools and sends tool
+messages to continue. No `/v1/responses`, embeddings, hosted assistants,
+Realtime/WebSocket speech, audio translation, or HTTP microphone endpoint is
+implemented. OpenAI compatibility covers the documented routes.
+
+Audio details matter:
+
+- OpenAI voice aliases (`alloy`, `nova`, etc.) select the Mac's System voice.
+  Use a name/id from `/v1/audio/voices` to select an installed voice.
+- HTTP speech defaults to AAC, including requests for `mp3` or `opus`, because
+  macOS cannot encode those formats. Respect `Content-Type`; do not save AAC
+  bytes with an MP3 extension. Request `wav` explicitly for WAV output.
+- HTTP speech formats: `wav`, `m4a`, `aac`, `flac`, `aiff`, `pcm`; PCM is
+  24 kHz, 16-bit little-endian mono. `caf` is SDK/CLI-only.
+- Transcription response formats: `json` (`{ text }`), `text`, `srt`, `vtt`,
+  `verbose_json`. Word timestamps use `timestamp_granularities[]=word` with
+  `verbose_json`. `prompt` is split on commas/newlines into recognition hints.
+- HTTP audio uploads are limited to 512 MiB. SDK/CLI file inputs do not have
+  that server upload limit. TTS returns a rendered file, not live audio chunks.
+
+An existing Python OpenAI client can use all three capabilities:
+
+```python
+# Optional client dependency: python -m pip install openai
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11436/v1", api_key="unused")
+reply = client.chat.completions.create(
+    model="apple-on-device", messages=[{"role": "user", "content": "Say hello."}],
+)
+print(reply.choices[0].message.content)
+audio = client.audio.speech.create(
+    model="tts-1", voice="alloy", input="Hello there", response_format="wav",
+)
+audio.write_to_file("hello.wav")
+with open("hello.wav", "rb") as recording:
+    print(client.audio.transcriptions.create(
+        model="whisper-1", file=recording, language="en",
+    ).text)
+```
+
+## Ollama-compatible apps and Vercel AI SDK
+
+The same server provides Ollama's API at `http://127.0.0.1:11436` (no `/v1`).
+Point an Ollama-compatible app there and select `apple-on-device`. To use
+the usual Ollama port, stop any process using it and start
+`npx apple-llm serve --port 11434`. No Ollama daemon or model pull is needed.
+
+Supported routes: `/api/chat`, `/api/generate`, `/api/tags`, `/api/show`,
+`/api/ps`, `/api/version`. Chat/generate stream NDJSON by default; use
+`stream: false` for one response. They accept `format` (`"json"` or JSON
+Schema), tools, images, and generation `options` including `temperature`,
+`num_predict`, `seed`, `top_p`. Embeddings and model installation are not served.
+
+For Vercel AI SDK 6/7, install `ai` separately and use the Node provider:
+
+```js
+import { generateText } from 'ai';
+import { apple } from 'apple-llm/ai-sdk';
+
+const { text } = await generateText({
+  model: apple(), // on device; apple('cloud') opts into cloud
+  prompt: 'Write a short greeting.',
+});
+console.log(text);
+```
+
+The provider supports text/object generation, streaming, tool calls, images,
+and abort signals. Apple options go in
+`providerOptions: { apple: { useCase, guardrails, builtInTools } }`.
+
+## CLI integration
+
+Use argument arrays when launching commands from application code; do not
+interpolate untrusted text into a shell command. For repeated LLM calls,
+prefer a persistent SDK client or HTTP server over a CLI process per request.
+
+```sh
+npx apple-llm run --tier device "Write a short greeting."
+npx apple-llm run --tier device --system "Be concise." -   # prompt on stdin
+npx apple-llm run --tier device --schema schema.json "Extract fields."
+npx apple-llm run --tier device --stream "Write a short greeting."
+npx apple-llm speak "Hello there"                         # Mac speaker playback
+npx apple-llm speak --file notes.txt -o notes.m4a          # audio file
+npx apple-llm transcribe meeting.mp4 -o meeting.srt        # text/json/srt/vtt by extension
+npx apple-llm listen --once                              # microphone
+npx apple-llm languages install en-US
+npx apple-llm --help
+```
+
+Both CLIs provide model/speech commands, schema files, images, built-in tools,
+sessions, token counting, and writing presets. Node additionally provides
+`serve` and interactive `chat`. `run --json` in Node returns result metadata;
+Python does not have every Node flag. Consult the installed CLI's `--help`.
+
+## Optional cloud tier
+
+Cloud sends prompts and supplied attachments to Apple's Private Cloud Compute.
+It is not local or offline. Use it only when it matches the user's requirements.
+One-time setup generates, signs, and imports a Shortcut on the Mac:
+
+```sh
+npx apple-llm setup-cloud
+# A separate web-search-enabled Shortcut:
+npx apple-llm setup-cloud --web-search
+```
+
+Node: `new AppleLLM({ tier: 'cloud', fallback: 'device' })`.
+Python: `AppleLLM(tier="cloud", fallback="device")`.
+The fallback handles cloud quota/rate-limit failures; it does not make cloud
+requests local or guarantee every kind of failure will fall back. In Node,
+`generate()` reports the tier that actually answered.
+
+Cloud has roughly a 32,768-token window, returns one chunk, and has no
+constrained decoding or callable custom tools through this library. JSON is
+requested, recovered, and can fail validation. Node supports cloud images on
+compatible macOS 27 releases; Python's high-level client currently rejects
+cloud images. `webSearch: true` / `web_search=True` uses the web-enabled Shortcut.
+Private Shortcuts behavior can change between OS releases.
+
+Apple imposes a per-Mac quota plus a short-term rate limit. `probe().cloud.quota`
+cannot predict the short-term limiter. Catch `QuotaError`, respect a reported
+reset time, and back off or use an explicitly configured device fallback.
+Do not use cloud for unbounded batch jobs.
+
+## Model limits, structured output, and operation
+
+- Device context is typically 4,096 tokens on macOS 26 and 8,192 on macOS 27;
+  inspect the runtime probe. Budget instructions, history, input, schema,
+  tools, and output together. Bound input and output; chunk long documents.
+- The small on-device model suits classification, extraction, tagging,
+  rewriting, summaries, and short answers. Do not rely on it for complex
+  reasoning, large code generation, embeddings, or live web knowledge.
+- Vision and built-in tools need matching OS capabilities (typically macOS
+  27+). Text `documents` are inlined; they are not arbitrary binary/PDF parsing.
+  `askScreen` / `ask_screen` captures the Mac screen and needs the appropriate
+  macOS screen-capture access.
+- Leave the default temperature at `0.4`. Greedy `temperature: 0` can cause
+  repetition and severe latency during constrained generation. For repeatable
+  Node output use `sampling: { mode: 'topK', k: 50, seed: 42 }`; Python exports
+  `sampling_seeded(42)`.
+- Device structured output enforces Apple's supported schema shape. Not every
+  JSON Schema constraint is enforced: bound arrays with `maxItems`; do not
+  rely on string `maxLength` or semantic correctness. Standard Schema/Pydantic
+  validation checks additional constraints after generation.
+- The SDK translates JSON Schema to Apple's dialect. Do not hand-edit
+  `x-order`, titles, enums, `$ref`, unions, or `additionalProperties` to work
+  around it. Pass the standard schema to `json()`.
+- Reuse clients to keep the helper warm. Apple serializes inference; spawning
+  many clients does not increase model throughput. Each helper handles one
+  request at a time; use separate `AppleSpeech` instances for independent
+  speech workloads. Close clients during shutdown.
+- Named conversations persist on disk; use distinct IDs for unrelated users
+  and the conversation reset APIs when clearing history.
+- Node helpers include `rewrite`, `proofread`, `summarize`, `draft`, `tone`,
+  and `askScreen`; Python has `rewrite`, `proofread`, `summarize`, `draft`,
+  and `ask_screen`, with snake_case options.
+  Long-text `summarize` can split work into parts.
+
+## Errors and troubleshooting
+
+Branch on exported error classes, not substrings of Apple's messages. Node
+errors extend `AppleLLMError` and have stable `.code` values; Python errors
+also extend `AppleLLMError` but do not share the Node `.code` API.
+
+| Error | Integration response |
+| --- | --- |
+| `ModelUnavailableError` | Read `.reason`: unsupported platform/OS, ineligible device, disabled Apple Intelligence, model not ready, or missing compiler; show the relevant setup action |
+| `SetupRequiredError` | Complete the named setup step: cloud Shortcut or recognition language assets |
+| `UnsupportedError` | Change an unsupported format, voice, language, OS feature, or tier option; do not silently substitute |
+| `PermissionDeniedError` | Explain the microphone permission for the launching app in macOS Settings |
+| `ContextLengthError` | Reduce input/history/schema/output budget or chunk work |
+| `SchemaRejectedError` | Simplify the schema or check dialect support |
+| `SchemaValidationError` | Handle invalid structured output; Node exposes `.issues`/`.text`, Python exposes the failed text where available |
+| `QuotaError` | Back off; Node `.resetDate`, Python `.reset_date` when available; optional device fallback |
+| `TimeoutError` | Surface the timeout and allow retry; explicitly import Python's error to distinguish it from the builtin |
+| `AbortError` (Node), `CancelledError` (Python) | Treat user cancellation as expected |
+| `RefusalError` | Surface the model's refusal |
+| `ToolExecutionError`, `ModelBusyError` (Node) | Inspect the tool failure or exhausted busy-model retries |
+
+Troubleshooting order: check OS/architecture, run the appropriate probe,
+verify `xcode-select --install`, check Apple Intelligence only for LLM use,
+list available voices/languages for speech, then reproduce with one short
+request. Do not diagnose speech failure from `/health` alone. A successful
+`/v1/models` call proves discovery works, not that a model is ready.
+
+## Verification and maintenance
+
+For an integration, check: device-only model selection, successful text output,
+valid structured fields, nonempty correctly formatted audio, transcription of
+a known recording, cleanup, and an understandable unavailable/setup path.
+Test microphone capture interactively when that feature is requested. Avoid
+cloud calls in routine smoke tests because they send data off-device and
+consume quota. Runtime probes are more reliable than OS/model-name assumptions.
+
+For maintainers: this root `llms.txt` is the single source for the agent guide.
+The website serves it during development and emits the same bytes at build
+time; do not maintain a second hand-written copy. Update it when public APIs,
+requirements, or supported routes change. Check these implementation sources
+if a package version differs from this guide:
+
+- Node API: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/README.md
+- Python API: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/python/README.md
+- Node exports/types: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/src/index.ts
+- Node LLM client: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/src/client.ts
+- Speech types/client: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/src/speech.ts
+- HTTP routes: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/src/server.ts
+- Python LLM client: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/python/src/apple_llm/__init__.py
+- Python speech: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/python/src/apple_llm/_speech.py
+- Examples: https://github.com/jagdishpal02000/apple-llm/tree/main/packages/node/examples
+- Changelog: https://github.com/jagdishpal02000/apple-llm/blob/main/packages/node/CHANGELOG.md
+
+Repository checks: run `npm test` and `npm run typecheck` in `packages/node`,
+`pytest` in `packages/python`, and `npm run build` in `site`. Hardware tests
+are opt-in with `APPLE_LLM_LIVE=1`; cloud tests additionally need
+`APPLE_LLM_LIVE_CLOUD=1` and a configured Shortcut. The shared Swift source is
+`swift/helper.swift`; `scripts/embed-helper.mjs` synchronizes package copies.
