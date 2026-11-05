@@ -1,4 +1,5 @@
-"""apple-llm -- one library for Apple's on-device and Private Cloud Compute models.
+"""apple-llm -- one library for Apple's on-device and Private Cloud Compute models,
+and for the text to speech and speech recognition built into macOS.
 
 macOS 26+ on Apple Silicon only. No API key, no account, no developer program.
 
@@ -9,6 +10,11 @@ macOS 26+ on Apple Silicon only. No API key, no account, no developer program.
     with AppleLLM(tier="device") as llm:
         llm.text("Summarize this", system="You are terse.")
         llm.json("Extract the fields", schema=MyPydanticModel)
+
+    from apple_llm import speak, transcribe
+
+    speak("Hello there")
+    transcribe("meeting.m4a").text
 """
 
 from __future__ import annotations
@@ -46,17 +52,52 @@ from ._device import (
 )
 from ._errors import (
     AppleLLMError,
+    CancelledError,
     ContextLengthError,
     ModelUnavailableError,
+    PermissionDeniedError,
     QuotaError,
     RefusalError,
     SchemaRejectedError,
     SchemaValidationError,
     SetupRequiredError,
     TimeoutError,
+    UnsupportedError,
 )
 from ._json_recovery import extract_json_span, parse_llm_json, strip_code_fences
 from ._schema import JsonSchema, to_apple_schema
+from ._speech import (
+    AppleSpeech,
+    AsyncAppleSpeech,
+    AudioFormat,
+    AudioInput,
+    ListenEvent,
+    ListenSession,
+    SpeakResult,
+    SpeechLanguage,
+    SpeechLanguages,
+    SpokenWord,
+    Synthesis,
+    SystemVoice,
+    Transcript,
+    TranscriptSegment,
+    TranscriptWord,
+    Voice,
+    VoiceInfo,
+    install_speech_language,
+    list_speech_languages,
+    list_voices,
+    listen,
+    listen_once,
+    probe_speech,
+    remove_speech_language,
+    speak,
+    synthesize,
+    system_voice,
+    to_srt,
+    to_vtt,
+    transcribe,
+)
 from ._target import host_target, is_apple_silicon_mac, target_triple_from
 
 __version__ = "0.3.0"
@@ -101,6 +142,39 @@ __all__ = [
     "TimeoutError",
     "SetupRequiredError",
     "RefusalError",
+    "UnsupportedError",
+    "PermissionDeniedError",
+    "CancelledError",
+    "AppleSpeech",
+    "AsyncAppleSpeech",
+    "AudioFormat",
+    "AudioInput",
+    "ListenEvent",
+    "ListenSession",
+    "SpeakResult",
+    "SpeechLanguage",
+    "SpeechLanguages",
+    "SpokenWord",
+    "Synthesis",
+    "SystemVoice",
+    "Transcript",
+    "TranscriptSegment",
+    "TranscriptWord",
+    "Voice",
+    "VoiceInfo",
+    "speak",
+    "synthesize",
+    "list_voices",
+    "system_voice",
+    "transcribe",
+    "listen",
+    "listen_once",
+    "list_speech_languages",
+    "install_speech_language",
+    "remove_speech_language",
+    "probe_speech",
+    "to_srt",
+    "to_vtt",
     "DEFAULT_TEMPERATURE",
     "DEFAULT_MAX_TOKENS",
     "UseCase",

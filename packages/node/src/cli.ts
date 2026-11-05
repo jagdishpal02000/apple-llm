@@ -8,14 +8,28 @@
  *   apple-llm run --tier cloud --schema s.json "Extract the fields"
  *   apple-llm chat                                     # interactive
  *   apple-llm serve                                    # OpenAI-compatible API
+ *   apple-llm speak "Hello there"                      # out loud
+ *   apple-llm transcribe meeting.m4a --format srt
+ *   apple-llm listen                                   # from the microphone
  */
 import { fstatSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { AppleLLM, captureScreenshot, parseImageFlag, probe } from './index.js';
 import { installCloudShortcut } from './cloud.js';
+import type { OnProgress } from './compile.js';
 import { AppleLLMError } from './errors.js';
 import { runRepl } from './repl.js';
 import { DEFAULT_PORT, serve } from './server.js';
+import {
+  AppleSpeech,
+  probeSpeech,
+  toSRT,
+  toVTT,
+  type AudioFormat,
+  type AudioInput,
+  type Transcript,
+} from './speech.js';
 
 interface Flags {
   tier?: string;
@@ -42,11 +56,29 @@ interface Flags {
   host?: string;
   apiKey?: string;
   cors?: string;
+  voice?: string;
+  language?: string;
+  speed?: string;
+  pitch?: string;
+  volume?: string;
+  ssml?: boolean;
+  out?: string;
+  format?: string;
+  sampleRate?: string;
+  file?: string;
+  words?: boolean;
+  hint: string[];
+  alternatives?: boolean;
+  noDownload?: boolean;
+  all?: boolean;
+  once?: boolean;
+  silence?: string;
+  maxSeconds?: string;
   positional: string[];
 }
 
 function parseArgs(argv: string[]): Flags {
-  const flags: Flags = { positional: [], image: [], document: [], tool: [] };
+  const flags: Flags = { positional: [], image: [], document: [], tool: [], hint: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const take = (flag: string): string => {
@@ -81,6 +113,24 @@ function parseArgs(argv: string[]): Flags {
       case '--host': flags.host = take('--host'); break;
       case '--api-key': flags.apiKey = take('--api-key'); break;
       case '--cors': flags.cors = take('--cors'); break;
+      case '--voice': flags.voice = take('--voice'); break;
+      case '--language': case '--lang': case '-l': flags.language = take('--language'); break;
+      case '--speed': flags.speed = take('--speed'); break;
+      case '--pitch': flags.pitch = take('--pitch'); break;
+      case '--volume': flags.volume = take('--volume'); break;
+      case '--ssml': flags.ssml = true; break;
+      case '--out': case '-o': flags.out = take('--out'); break;
+      case '--format': flags.format = take('--format'); break;
+      case '--sample-rate': flags.sampleRate = take('--sample-rate'); break;
+      case '--file': flags.file = take('--file'); break;
+      case '--words': flags.words = true; break;
+      case '--hint': flags.hint.push(take('--hint')); break;
+      case '--alternatives': flags.alternatives = true; break;
+      case '--no-download': flags.noDownload = true; break;
+      case '--all': flags.all = true; break;
+      case '--once': flags.once = true; break;
+      case '--silence': flags.silence = take('--silence'); break;
+      case '--max-seconds': flags.maxSeconds = take('--max-seconds'); break;
       default: flags.positional.push(arg);
     }
   }
@@ -117,6 +167,74 @@ async function promptFrom(arg: string): Promise<string> {
   return piped === undefined ? arg : `${piped.trimEnd()}\n\n${arg}`;
 }
 
+/**
+ * One status line on stderr, rewritten in place on a terminal. When piped, each
+ * status appears once with no percentages, so a log is not a wall of updates.
+ */
+function statusLine(): { onProgress: OnProgress; clear: () => void } {
+  const tty = process.stderr.isTTY === true;
+  let active = false;
+  let last = '';
+  return {
+    onProgress: (progress) => {
+      if (!tty) {
+        if (progress.status !== last) process.stderr.write(`  ${progress.status}\n`);
+        last = progress.status;
+        return;
+      }
+      const percent = progress.percent === undefined ? '' : ` ${progress.percent}%`;
+      process.stderr.write(`\r\x1b[K  ${progress.status}${percent}`);
+      active = true;
+    },
+    clear: () => {
+      if (active) process.stderr.write('\r\x1b[K');
+      active = false;
+    },
+  };
+}
+
+/** A number from a flag, or a usage error naming the flag. */
+function numberFlag(name: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) throw new Error(`${name} must be a number (got "${value}").`);
+  return parsed;
+}
+
+/**
+ * What `speak` should say. Words on the command line need no quotes, so
+ * `apple-llm speak hello there` works. Bare flags left over are typos: without
+ * this check, a mistyped option would be read aloud.
+ */
+async function textToSpeak(flags: Flags): Promise<string | undefined> {
+  if (flags.file !== undefined) return readFile(flags.file, 'utf8');
+  if (flags.positional.length === 1 && flags.positional[0] === '-') return readStdin();
+  if (flags.positional.length > 0) return flags.positional.join(' ');
+  return pipedInput();
+}
+
+function rejectUnknownOptions(flags: Flags): void {
+  const unknown = flags.positional.find((arg) => arg.startsWith('--'));
+  if (unknown !== undefined) throw new Error(`Unknown option ${unknown}.`);
+}
+
+const TRANSCRIPT_FORMATS = new Set(['text', 'json', 'srt', 'vtt']);
+
+function renderTranscript(transcript: Transcript, format: string): string {
+  if (format === 'json') return `${JSON.stringify(transcript, null, 2)}\n`;
+  if (format === 'srt') return toSRT(transcript);
+  if (format === 'vtt') return toVTT(transcript);
+  return transcript.text === '' ? '' : `${transcript.text}\n`;
+}
+
+/** `notes.srt` means subtitles, `notes.json` means JSON; anything else is text. */
+function transcriptFormatFor(out: string | undefined): string {
+  const extension = out === undefined ? '' : path.extname(out).slice(1).toLowerCase();
+  return TRANSCRIPT_FORMATS.has(extension) ? extension : 'text';
+}
+
+const SYSTEM_VOICE_HINT = 'search System Settings for "System voice"';
+
 const KNOWN_TOOLS = new Set(['ocr', 'barcode', 'spotlight']);
 
 function parseTools(values: string[], usageError: (m: string) => number): string[] | undefined {
@@ -146,6 +264,13 @@ const USAGE = `apple-llm — Apple's on-device and Private Cloud Compute models
   apple-llm history --session <id>       show a conversation's mirrored turns
   apple-llm reset [--session <id>]       drop one conversation, or all
   apple-llm rewrite|proofread|summarize|draft <text|->   Write with Siri presets
+
+  Speech, on this Mac, with or without Apple Intelligence:
+  apple-llm speak <text|->               say it out loud, or save it with -o file.m4a
+  apple-llm voices                       the voices on this Mac
+  apple-llm transcribe <file|->          audio or video to text, any length
+  apple-llm listen                       the microphone to text, live
+  apple-llm languages [install|remove <code>]   languages it can recognise
 
   Text piped into run goes in before the prompt:
     cat notes.md | apple-llm "Summarize this"
@@ -185,11 +310,47 @@ serve options:
 
 ask-screen options: --mode interactive|window|fullscreen (default interactive),
   plus --system, --session, --max-tokens.
+
+speak options:
+  --voice <name|id|system>   default: your System voice (apple-llm voices lists them)
+  --language <code>          the best voice for a language: fr, en-GB, hi-IN
+  --speed <n>                1 is normal, 2 is twice as fast (about 0.56 to 4)
+  --pitch <n>                0.5 to 2
+  --volume <n>               0 to 1
+  --ssml                     the text is SSML
+  --file <path>              read the text from a file
+  -o, --out <file|->         save instead of playing: .wav .m4a .aac .flac .aiff .caf .pcm
+                             ("-" writes the audio to stdout)
+  --format <fmt>             when the extension does not say
+  --sample-rate <hz>         resample, e.g. 16000
+  --words                    with --json: every word's timing
+  --json                     print details of what was made
+
+voices options: --language <code>, --all (every language, and novelty voices), --json.
+
+transcribe options:
+  --language <code>          default: this Mac's language; it is not detected from the audio
+  --format text|json|srt|vtt default: from the -o extension, otherwise text
+  -o, --out <file>           write there instead of stdout
+  --words                    with --format json: every word's timing and confidence
+  --hint <term>              a name or term to expect (repeatable)
+  --alternatives             with --format json: other readings of each segment
+  --no-download              fail rather than download a missing language
+
+listen options:
+  --once                     stop when you pause (--silence sets how long; default 2s)
+  --silence <seconds>        seconds of quiet that end it
+  --max-seconds <n>          stop after this long, speech or no speech
+  --language, --hint, --no-download   as for transcribe
+  -o, --out <file>           also write the final text there
+  --json                     one JSON event per line, partial results included
+  Stops with Ctrl-C, and keeps what it heard.
 `;
 
 const COMMANDS = new Set([
   'probe', 'setup-cloud', 'run', 'chat', 'serve', 'count', 'ask-screen', 'history', 'reset',
   'rewrite', 'proofread', 'summarize', 'draft', 'help',
+  'speak', 'voices', 'transcribe', 'listen', 'languages',
 ]);
 
 async function main(): Promise<number> {
@@ -224,8 +385,9 @@ async function main(): Promise<number> {
 
   if (command === 'probe') {
     const result = await probe((p) => process.stderr.write(`  ${p.status}\n`));
+    const speech = await probeSpeech();
     if (flags.json === true) {
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ ...result, speech }, null, 2)}\n`);
       return result.device.available || result.cloud.available ? 0 : 1;
     }
     const d = result.device;
@@ -250,7 +412,256 @@ async function main(): Promise<number> {
       if (c.quota.resetDate !== undefined) process.stdout.write(`  resets      ${c.quota.resetDate}\n`);
     }
     if (c.reason !== undefined) process.stdout.write(`  reason      ${c.reason}\n`);
+    process.stdout.write('\nspeech\n');
+    process.stdout.write(`  available   ${speech.available}\n`);
+    if (speech.voices !== undefined) process.stdout.write(`  voices      ${speech.voices}\n`);
+    if (speech.systemVoice !== undefined) {
+      process.stdout.write(`  speaks as   ${speech.systemVoice.name} (${speech.systemVoice.language})\n`);
+    }
+    if (speech.languages !== undefined) {
+      process.stdout.write(`  recognises  ${speech.languages} languages, ${speech.defaultLanguage} by default\n`);
+    }
+    if (speech.reason !== undefined) process.stdout.write(`  reason      ${speech.reason}\n`);
     return d.available || c.available ? 0 : 1;
+  }
+
+  if (command === 'speak') {
+    let text: string | undefined;
+    let speed: number | undefined;
+    let pitch: number | undefined;
+    let volume: number | undefined;
+    let sampleRate: number | undefined;
+    try {
+      rejectUnknownOptions(flags);
+      speed = numberFlag('--speed', flags.speed);
+      pitch = numberFlag('--pitch', flags.pitch);
+      volume = numberFlag('--volume', flags.volume);
+      sampleRate = numberFlag('--sample-rate', flags.sampleRate);
+      text = await textToSpeak(flags);
+    } catch (err) {
+      return usageError(err instanceof Error ? err.message : String(err));
+    }
+    if (text === undefined) return usageError('speak needs some text, "-" to read stdin, or --file <path>.');
+    const status = statusLine();
+    const speech = new AppleSpeech({ onProgress: status.onProgress });
+    const voiceOptions = { voice: flags.voice, language: flags.language, speed, pitch, volume, ssml: flags.ssml };
+    try {
+      const toStdout = flags.out === '-' || (flags.out === undefined && flags.format !== undefined);
+      if (toStdout) {
+        if (process.stdout.isTTY === true) return usageError('That would print audio to the terminal. Add -o <file>, or redirect it.');
+        const made = await speech.synthesize(text, {
+          ...voiceOptions,
+          format: flags.format as AudioFormat | undefined,
+          sampleRate,
+        });
+        status.clear();
+        process.stdout.write(made.audio);
+        return 0;
+      }
+      if (flags.out !== undefined) {
+        const saved = await speech.synthesize(text, {
+          ...voiceOptions,
+          out: flags.out,
+          format: flags.format as AudioFormat | undefined,
+          sampleRate,
+          words: flags.words,
+        });
+        status.clear();
+        if (flags.json === true) {
+          process.stdout.write(`${JSON.stringify(saved, null, 2)}\n`);
+        } else {
+          process.stderr.write(`wrote ${flags.out} (${saved.duration.toFixed(1)}s, ${saved.voice.name})\n`);
+        }
+        return 0;
+      }
+      const spoken = await speech.speak(text, voiceOptions);
+      status.clear();
+      if (flags.json === true) process.stdout.write(`${JSON.stringify(spoken, null, 2)}\n`);
+      return 0;
+    } finally {
+      status.clear();
+      speech.close();
+    }
+  }
+
+  if (command === 'voices') {
+    const speech = new AppleSpeech({ onProgress: (p) => process.stderr.write(`  ${p.status}\n`) });
+    try {
+      const everything = await speech.voices({ language: flags.language });
+      if (flags.json === true) {
+        process.stdout.write(`${JSON.stringify(everything, null, 2)}\n`);
+        return 0;
+      }
+      const system = await speech.systemVoice();
+      process.stdout.write(`Your System voice is ${system.name} (${system.language}). To change it, ${SYSTEM_VOICE_HINT}.\n\n`);
+      // A hundred and eighty lines is not an answer to "what can I use?".
+      const family = system.language.split('-')[0];
+      const shown = flags.all === true
+        ? everything
+        : everything.filter((voice) => !voice.novelty && (flags.language !== undefined || voice.language.split('-')[0] === family));
+      if (shown.length === 0) process.stdout.write('No voices match that.\n');
+      const width = Math.max(4, ...shown.map((voice) => voice.name.length));
+      for (const voice of shown) {
+        const notes = [
+          voice.quality === 'default' ? '' : voice.quality,
+          voice.novelty ? 'novelty' : '',
+          voice.engine === 'say' ? 'speed only' : '',
+          voice.isDefault ? 'your System voice' : '',
+        ].filter(Boolean).join(', ');
+        const gender = voice.gender === 'unspecified' ? '' : voice.gender;
+        process.stdout.write(`  ${voice.name.padEnd(width)}  ${voice.language.padEnd(7)}  ${gender.padEnd(6)}  ${notes}`.trimEnd() + '\n');
+      }
+      if (flags.all !== true) {
+        const hidden = everything.length - shown.length;
+        if (hidden > 0) process.stdout.write(`\n${hidden} more: --all lists every language and novelty voice, --language fr filters.\n`);
+      }
+      process.stdout.write(
+        '\nTry one:  apple-llm speak "Hello there" --voice ' + (shown.find((voice) => !voice.isDefault)?.name ?? system.name) + '\n' +
+          `Better voices are free downloads in the same place, and so are Siri voices where macOS offers them: ${SYSTEM_VOICE_HINT}.\n`,
+      );
+      return 0;
+    } finally {
+      speech.close();
+    }
+  }
+
+  if (command === 'languages') {
+    const speech = new AppleSpeech();
+    const [action, code] = flags.positional;
+    try {
+      if (action === 'install') {
+        if (code === undefined) return usageError('languages install needs a language, e.g. hi-IN.');
+        const status = statusLine();
+        const installed = await speech.installLanguage(code, { onProgress: status.onProgress });
+        status.clear();
+        process.stdout.write(`${installed} is ready.\n`);
+        return 0;
+      }
+      if (action === 'remove') {
+        if (code === undefined) return usageError('languages remove needs a language, e.g. hi-IN.');
+        const removed = await speech.removeLanguage(code);
+        process.stdout.write(removed ? `Released ${code}. macOS removes it when it wants the space.\n` : `${code} was not installed by apple-llm, so nothing changed.\n`);
+        return 0;
+      }
+      if (action !== undefined) return usageError(`languages takes install or remove (got "${action}").`);
+      const { languages, default: chosen } = await speech.languages();
+      if (flags.json === true) {
+        process.stdout.write(`${JSON.stringify({ languages, default: chosen }, null, 2)}\n`);
+        return 0;
+      }
+      process.stdout.write('Languages macOS can recognise. A * is already on this Mac; the rest download on first use, in about 25 seconds.\n\n');
+      const width = Math.max(...languages.map((language) => language.id.length));
+      for (const language of languages) {
+        const note = language.id === chosen ? '  (the default)' : '';
+        process.stdout.write(`${language.installed ? '*' : ' '} ${language.id.padEnd(width)}  ${language.name}${note}\n`);
+      }
+      return 0;
+    } finally {
+      speech.close();
+    }
+  }
+
+  if (command === 'transcribe') {
+    const arg = flags.positional[0];
+    if (arg === undefined) return usageError('transcribe needs a file, or "-" to read audio from stdin.');
+    try {
+      rejectUnknownOptions(flags);
+    } catch (err) {
+      return usageError(err instanceof Error ? err.message : String(err));
+    }
+    const format = flags.format ?? transcriptFormatFor(flags.out);
+    if (!TRANSCRIPT_FORMATS.has(format)) return usageError(`--format must be text, json, srt or vtt (got "${format}").`);
+    let input: AudioInput = arg;
+    if (arg === '-') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+      input = Buffer.concat(chunks);
+    }
+    const status = statusLine();
+    const speech = new AppleSpeech({ onProgress: status.onProgress });
+    try {
+      const transcript = await speech.transcribe(input, {
+        language: flags.language,
+        // Subtitles use word timings to keep each cue short enough to read.
+        words: flags.words === true || format === 'srt' || format === 'vtt',
+        alternatives: flags.alternatives,
+        hints: flags.hint.length > 0 ? flags.hint : undefined,
+        download: flags.noDownload === true ? false : undefined,
+        onProgress: status.onProgress,
+      });
+      status.clear();
+      if (transcript.text === '') process.stderr.write('No speech found.\n');
+      const rendered = renderTranscript(transcript, format);
+      if (flags.out !== undefined) {
+        await writeFile(flags.out, rendered);
+        process.stderr.write(`wrote ${flags.out}\n`);
+      } else {
+        process.stdout.write(rendered);
+      }
+      return 0;
+    } finally {
+      status.clear();
+      speech.close();
+    }
+  }
+
+  if (command === 'listen') {
+    let silence: number | undefined;
+    let maxSeconds: number | undefined;
+    try {
+      rejectUnknownOptions(flags);
+      silence = numberFlag('--silence', flags.silence);
+      maxSeconds = numberFlag('--max-seconds', flags.maxSeconds);
+    } catch (err) {
+      return usageError(err instanceof Error ? err.message : String(err));
+    }
+    const once = flags.once === true || silence !== undefined;
+    const status = statusLine();
+    const speech = new AppleSpeech({ onProgress: status.onProgress });
+    const interactive = process.stderr.isTTY === true;
+    const session = speech.listen({
+      language: flags.language,
+      continuous: !once,
+      silence,
+      maxSeconds,
+      words: flags.words,
+      hints: flags.hint.length > 0 ? flags.hint : undefined,
+      download: flags.noDownload === true ? false : undefined,
+      onProgress: status.onProgress,
+      onListening: () => {
+        status.clear();
+        process.stderr.write(once ? 'Listening. It stops when you pause.\n' : 'Listening. Press Ctrl-C to stop.\n');
+      },
+    });
+    // The first Ctrl-C finishes and keeps the text; a second is for a real hurry.
+    const onInterrupt = (): void => {
+      session.stop();
+      process.once('SIGINT', () => process.exit(130));
+    };
+    process.once('SIGINT', onInterrupt);
+    try {
+      for await (const event of session) {
+        if (flags.json === true) {
+          process.stdout.write(`${JSON.stringify(event)}\n`);
+          continue;
+        }
+        if (interactive) {
+          const room = Math.max(20, (process.stderr.columns ?? 80) - 1);
+          process.stderr.write(`\r\x1b[K${event.final ? '' : `\x1b[2m${event.text.slice(-room)}\x1b[0m`}`);
+        }
+        if (event.final) process.stdout.write(`${event.text}\n`);
+      }
+      const transcript = await session.result;
+      if (flags.out !== undefined) {
+        await writeFile(flags.out, renderTranscript(transcript, transcriptFormatFor(flags.out)));
+        process.stderr.write(`wrote ${flags.out}\n`);
+      }
+      return 0;
+    } finally {
+      process.removeListener('SIGINT', onInterrupt);
+      status.clear();
+      speech.close();
+    }
   }
 
   if (command === 'setup-cloud') {
@@ -415,6 +826,7 @@ async function main(): Promise<number> {
         `  OpenAI: ${running.url}  (base URL for OpenAI SDKs, LangChain, Open WebUI, editor plugins)\n` +
         `  Ollama: ${root}${port === 11434 ? '' : '  (--port 11434 for apps that only look on Ollama\'s port)'}\n` +
         `  models: apple-on-device${flags.tier === 'cloud' ? ' (default: apple-private-cloud)' : ''}, apple-private-cloud\n` +
+        `  audio:  ${running.url}/audio/speech, ${running.url}/audio/transcriptions\n` +
         `  try:    curl ${running.url}/chat/completions -H 'content-type: application/json' ` +
         `-d '{"model":"apple-on-device","messages":[{"role":"user","content":"Hello"}]}'\n` +
         (flags.host === '0.0.0.0' && flags.apiKey === undefined

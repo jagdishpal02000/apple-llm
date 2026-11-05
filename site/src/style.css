@@ -1234,6 +1234,10 @@ pre > code[data-lang] {
   border-color: transparent;
 }
 
+#speech .codebox {
+  margin-top: clamp(32px, 5vw, 56px);
+}
+
 .codebox-note {
   font-size: 14px;
   color: var(--night-ink-2);

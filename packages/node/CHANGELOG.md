@@ -25,6 +25,21 @@
 
 ### Added
 
+- **Speech: text to speech and speech to text, on device.** `speak()`,
+  `synthesize()`, `listVoices()`, `transcribe()`, `transcribeStream()`, `listen()`
+  and the `apple-llm speak`, `voices`, `transcribe`, `listen` and `languages`
+  commands. Neither needs Apple Intelligence or costs quota. Text to speech reaches
+  every voice on the Mac, out loud or to WAV, M4A, AAC, FLAC, AIFF, CAF or raw PCM,
+  with speed, pitch, volume, SSML and word timings. Speech to text reads audio and
+  MP4 or MOV video of any length, or the microphone live, in 68 languages, with word
+  timings and SRT or VTT subtitles. On an M4 Air, 60 minutes of speech renders in 40
+  seconds and 30 minutes transcribes in 28. The helper gains all this, so the first
+  call after upgrading compiles it once more.
+- **`POST /v1/audio/speech`, `POST /v1/audio/transcriptions` and
+  `GET /v1/audio/voices` on `apple-llm serve`**, checked with the official `openai`
+  SDK. macOS cannot encode MP3 or Opus, so requests for those get AAC, with a
+  `Content-Type` that says so.
+- **`PermissionDeniedError`**, for a refused microphone.
 - **`fallback: 'device'`** (`--fallback device` on `run`, `chat` and `serve`):
   with the cloud tier, answer on device when Apple turns a request away. The
   result's `tier` says which model answered.
@@ -44,6 +59,10 @@
 
 ### Python
 
+- **Speech**, as in Node: `speak()`, `synthesize()`, `list_voices()`,
+  `transcribe()`, `listen()`, `listen_once()`, `AppleSpeech`, `AsyncAppleSpeech` and
+  the same commands. Adds `UnsupportedError`, `PermissionDeniedError` and
+  `CancelledError`.
 - The same rate-limit and cloud-JSON fixes, `fallback="device"`, and the CLI
   shorthand and piping.
 - **Fixed `apple-llm run --stream` crashing** with `TypeError: AppleLLM.stream()

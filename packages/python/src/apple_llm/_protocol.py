@@ -18,7 +18,7 @@ import queue
 import subprocess
 import threading
 import weakref
-from typing import Optional
+from typing import Callable, Optional
 
 from ._errors import AppleLLMError
 from ._errors import TimeoutError as AppleTimeoutError
@@ -46,6 +46,8 @@ class HelperServer:
         self._reader: Optional[threading.Thread] = None
         #: Serialises callers so one request's reply cannot be handed to another.
         self._lock = threading.Lock()
+        #: Control lines arrive from other threads while a request holds _lock.
+        self._write_lock = threading.Lock()
         _live.add(self)
         # Belt and braces with the atexit hook: a dropped client is cleaned up
         # at collection, without waiting for interpreter shutdown.
@@ -163,6 +165,85 @@ class HelperServer:
                 return line
             self.stop()
             raise AppleLLMError("Apple helper stream did not terminate.", "device")
+
+    def write(self, control: dict) -> None:
+        """Send a control line (endInput, cancel) for the request in flight."""
+        import json as _json
+
+        process = self._process
+        if process is None or process.poll() is not None or process.stdin is None:
+            return
+        try:
+            with self._write_lock:
+                process.stdin.write(_json.dumps(control) + "\n")
+                process.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            pass  # The reader reports the real failure.
+
+    def exchange(
+        self,
+        payload: str,
+        on_event: Optional[Callable[[dict], None]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
+        """One request, by the helper's own framing: any number of ``"done": false``
+        lines are its events, and the next line is its reply.
+
+        The timeout measures silence rather than total time, so an operation of
+        any length is fine while it keeps sending events. Ctrl-C asks the helper
+        to stop, because the helper ignores SIGINT, and waits for it to say so:
+        otherwise it would go on talking, and the reply would be handed to
+        whichever request came next.
+        """
+        import json as _json
+
+        with self._lock:
+            process = self._start()
+            try:
+                assert process.stdin is not None
+                with self._write_lock:
+                    process.stdin.write(payload.replace("\n", " ") + "\n")
+                    process.stdin.flush()
+            except (BrokenPipeError, ValueError) as err:
+                self.stop()
+                raise AppleLLMError(f"Apple helper is not accepting input: {err}", "device") from err
+
+            interrupted: Optional[KeyboardInterrupt] = None
+            while True:
+                try:
+                    line = self._lines.get(timeout=self._timeout if interrupted is None else 5.0)
+                except queue.Empty:
+                    self.stop()
+                    if interrupted is not None:
+                        raise interrupted from None
+                    raise AppleTimeoutError(
+                        f"Apple helper timed out after {self._timeout:g}s of silence.", "device"
+                    ) from None
+                except KeyboardInterrupt as err:
+                    if interrupted is not None:
+                        self.stop()
+                        raise
+                    interrupted = err
+                    self.write({"op": "cancel", "id": request_id} if request_id else {"op": "cancel"})
+                    continue
+                if line is None:
+                    code = process.poll()
+                    self.stop()
+                    raise AppleLLMError(f"Apple helper exited with code {code}", "device")
+                try:
+                    parsed = _json.loads(line)
+                except ValueError:
+                    return line  # not JSON: let the caller classify it
+                if isinstance(parsed, dict) and parsed.get("done") is False:
+                    if on_event is not None and interrupted is None:
+                        try:
+                            on_event(parsed)
+                        except Exception:  # noqa: BLE001 - a bad callback must not break the framing
+                            pass
+                    continue
+                if interrupted is not None:
+                    raise interrupted
+                return line
 
     def stop(self) -> None:
         process, self._process = self._process, None

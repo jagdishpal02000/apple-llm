@@ -1,7 +1,7 @@
 {
   "name": "apple-llm",
   "version": "0.3.0",
-  "description": "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Node and the shell. Tool calling, streaming, guaranteed JSON, an OpenAI- and Ollama-compatible server and a Vercel AI SDK provider. No API key, no account.",
+  "description": "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Node and the shell, plus text to speech and speech to text in macOS's own voices and recognition. Tool calling, streaming, guaranteed JSON, an OpenAI- and Ollama-compatible server and a Vercel AI SDK provider. No API key, no account.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -71,6 +71,7 @@
     "apple-intelligence",
     "apple-silicon",
     "cli",
+    "dictation",
     "foundation-models",
     "foundationmodels",
     "free-llm",
@@ -97,10 +98,17 @@
     "private-ai",
     "private-cloud-compute",
     "siri",
+    "speech-recognition",
+    "speech-to-text",
     "streaming",
     "structured-output",
+    "stt",
+    "text-to-speech",
     "tool-calling",
+    "transcription",
+    "tts",
     "vercel-ai",
+    "voice",
     "zod"
   ],
   "scripts": {

@@ -31,7 +31,7 @@ import {
 } from './errors.js';
 import { parseLlmJson } from './json-recovery.js';
 import { ReplayBook, renderHistory, splitMessages, type ChatMessage, type HistoryEntry } from './messages.js';
-import { abortErrorFrom } from './protocol.js';
+import { abortErrorFrom, anySignal } from './protocol.js';
 import { toAppleSchema, type JsonSchema } from './schema.js';
 import {
   resolveSchema,
@@ -190,23 +190,6 @@ function repairFeedback(error: SchemaValidationError): string {
   const problems = error.message.replace(/^The model's reply did not satisfy the schema: /, '').replace(/\.$/, '');
   const previous = error.text.length > 2000 ? `${error.text.slice(0, 2000)}…` : error.text;
   return `Your previous answer was:\n${previous}\n\nIt was rejected: ${problems}. Answer again, fixing those problems.`;
-}
-
-/** Combine abort signals; `undefined` when there are none. */
-function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
-  const list = signals.filter((s): s is AbortSignal => s !== undefined);
-  if (list.length <= 1) return list[0];
-  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
-  if (typeof any === 'function') return any(list);
-  const controller = new AbortController();
-  for (const signal of list) {
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      break;
-    }
-    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
-  }
-  return controller.signal;
 }
 
 /**

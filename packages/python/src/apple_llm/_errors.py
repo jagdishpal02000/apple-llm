@@ -91,6 +91,21 @@ class RefusalError(AppleLLMError):
     """The model declined to answer (guardrail or refusal)."""
 
 
+class UnsupportedError(AppleLLMError, ValueError):
+    """A capability this OS or voice does not have, or a value it cannot use: an
+    unknown voice, a language macOS cannot recognise, an MP3 output file."""
+
+
+class PermissionDeniedError(AppleLLMError):
+    """macOS refused access to something -- so far only the microphone. The message
+    says which setting to change. Permission belongs to the app that launched this
+    process: Terminal, VS Code, your own app."""
+
+
+class CancelledError(AppleLLMError):
+    """A request was cancelled: ``ListenSession.cancel()``, or Ctrl-C during a speech call."""
+
+
 def unavailable_message(reason: Optional[str]) -> str:
     """Turn an unavailability reason into something the user can act on."""
     base = "Apple's on-device model is not available"

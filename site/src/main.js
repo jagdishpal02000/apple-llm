@@ -138,7 +138,10 @@ for (const box of $$('[data-tabs]')) {
     const PROBE_OUT = `<span class="t-h">on-device</span>\n  variant     AFM 3 Core Advanced\n  context     8192 tokens\n  supports    guidedGeneration, toolCalling, vision\n  use cases   general, contentTagging\n\n<span class="t-h">cloud (private cloud compute)</span>\n  quota       belowLimit\n\n`
     const RUN_OUT = `<span class="t-o">{"tags": ["sourdough", "rye starter", "cast iron", "dutch oven", "recipe"]}</span>\n\n`
     const COUNT_OUT = `<span class="t-o">64 tokens of 8192 (1%)</span>\n`
-    const HELP_OUT = `Try one of these + Enter:\n  apple-llm probe\n  apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"\n  apple-llm count --system "You are terse." "The quick brown fox…"\n  apple-llm chat   (basic chat demo, 'exit' quits)\n  clear\n`
+    const SPEAK_OUT = `<span class="t-o">(said out loud, in your System voice. Your Mac would have; this page is silent.)</span>\n`
+    const VOICES_OUT = `Your System voice is Samantha (en-US). To change it, search System Settings for "System voice".\n\n  Daniel    en-GB    male\n  Karen     en-AU    female\n  Rishi     en-IN    male\n  Samantha  en-US    female  your System voice\n`
+    const TRANSCRIBE_OUT = `<span class="t-o">The harbor was quiet when the morning ferry arrived, and most of the shops along the water had not yet opened.</span>\n`
+    const HELP_OUT = `Try one of these + Enter:\n  apple-llm probe\n  apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"\n  apple-llm count --system "You are terse." "The quick brown fox…"\n  apple-llm speak "Hello there"\n  apple-llm voices\n  apple-llm transcribe meeting.mp4\n  apple-llm chat   (basic chat demo, 'exit' quits)\n  clear\n`
     const CHAT_PROMPT = '<span class="t-you">you:</span> '
     const CHAT_PROMPT_TEXT = 'you: '
     const CHAT_INTRO = `Interactive chat (demo, canned replies). 'exit' quits.\n`
@@ -180,6 +183,9 @@ for (const box of $$('[data-tabs]')) {
       if (/^(help|apple-llm help|--help)$/.test(cmd)) return HELP_OUT
       if (/^(clear|apple-llm clear)$/.test(cmd)) return '__CLEAR__'
       if (cmd === 'apple-llm probe' || cmd === 'probe' || /(^|\s)probe(\s|$)/.test(` ${cmd} `)) return PROBE_OUT
+      if (/^(apple-llm )?speak\b/.test(cmd)) return SPEAK_OUT
+      if (/^(apple-llm )?voices\b/.test(cmd)) return VOICES_OUT
+      if (/^(apple-llm )?transcribe\b/.test(cmd)) return TRANSCRIBE_OUT
       if (/\bcount\b/.test(cmd)) return COUNT_OUT
       if (/\brun\b/.test(cmd)) return RUN_OUT
       if (/^(npm install|pip install|npx apple-llm|apple-llm setup-cloud)/.test(cmd))

@@ -12,7 +12,9 @@ requires-python = ">=3.10"
 keywords = ["apple", "llm", "foundation-models", "on-device", "private-cloud-compute",
             "apple-intelligence", "macos", "local-llm", "structured-output",
             "apple-silicon", "local-ai", "on-device-ai", "offline", "no-api-key",
-            "openai-compatible", "json-schema", "pydantic", "siri", "cli", "macos-tahoe"]
+            "openai-compatible", "json-schema", "pydantic", "siri", "cli", "macos-tahoe",
+            "text-to-speech", "tts", "speech-to-text", "stt", "speech-recognition",
+            "transcription", "dictation", "voice"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",

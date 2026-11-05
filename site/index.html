@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>apple-llm — Apple's free LLMs for Node.js and Python</title>
-<meta name="description" content="Call Apple Intelligence's on-device model and, on macOS 27, the Private Cloud Compute model Siri AI runs on, from Node.js and Python. Free, no API key, no model download. OpenAI-compatible server, tool calling, guaranteed JSON.">
+<title>apple-llm — Apple's free LLMs and speech for Node.js and Python</title>
+<meta name="description" content="Call Apple Intelligence's on-device model and, on macOS 27, the Private Cloud Compute model Siri AI runs on, from Node.js and Python, plus text to speech and speech to text in macOS's own voices and recognition. Free, no API key, no model download. OpenAI-compatible server, tool calling, guaranteed JSON.">
 <link rel="canonical" href="https://jagdishpal02000.github.io/apple-llm/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230A0B0D'/%3E%3Cpath d='M17 40l10-8-10-8' stroke='%23F7F8FA' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='33' y='37' width='14' height='6' rx='1' fill='%23D4FF3A'/%3E%3C/svg%3E">
 <meta property="og:title" content="apple-llm — the free AI already on your Mac">
@@ -51,6 +51,7 @@
     <nav class="nav" aria-label="Sections">
       <a href="#macos27">macOS 27</a>
       <a href="#cloud">Cloud</a>
+      <a href="#speech">Speech</a>
       <a href="#compare">Compare</a>
       <a href="#code" class="nav-keep">Code</a>
       <a href="#faq" class="nav-keep">FAQ</a>
@@ -69,7 +70,7 @@
 
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lede">The on-device model behind Apple Intelligence and, on macOS&nbsp;27, the server model Siri&nbsp;AI runs on. Call them from Node.js or Python with no API key, no account and no model download.</p>
+      <p class="lede">The on-device model behind Apple Intelligence and, on macOS&nbsp;27, the server model Siri&nbsp;AI runs on. Call them from Node.js or Python with no API key, no account and no model download. Your Mac's <a href="#speech">voices and speech recognition</a> come with them.</p>
 
       <div class="install" data-install>
         <div class="install-tabs" role="tablist" aria-label="Install command">
@@ -218,9 +219,104 @@ apple-llm run --tier cloud "Plan a 3-day Lisbon trip on a budget."</code></pre>
   </div>
 </section>
 
-<!-- ─────────────────────────── 03 COMPARE -->
+<!-- ─────────────────────────── 03 SPEECH -->
+<section class="sec wrap" id="speech">
+  <p class="sec-label"><span>03</span> Speech</p>
+  <div class="split">
+    <div class="split-head">
+      <h2>Your Mac can also <em>talk and listen.</em></h2>
+      <p>The voices and speech recognition built into macOS, from the same package. Apple Intelligence can be off, there's no quota, and it all runs on your Mac.</p>
+    </div>
+    <div class="fit">
+      <div>
+        <h3 class="fit-yes">Text to speech</h3>
+        <ul>
+          <li>Every voice on your Mac, by name</li>
+          <li>Out loud, or to WAV, M4A, AAC or FLAC</li>
+          <li>Speed, pitch, volume and SSML</li>
+          <li>The time of every word</li>
+          <li>30 minutes of audio rendered in 18 seconds</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="fit-yes">Speech to text</h3>
+        <ul>
+          <li>Recordings, audio or video, any length</li>
+          <li>The microphone, live</li>
+          <li>68 languages, downloaded on first use</li>
+          <li>Word timings and SRT or VTT subtitles</li>
+          <li>30 minutes transcribed in 28 seconds</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="codebox" data-tabs>
+    <div class="codebox-tabs" role="tablist" aria-label="Speech examples">
+      <button role="tab" aria-selected="true" aria-controls="p-sp-cli" id="t-sp-cli">CLI</button>
+      <button role="tab" aria-selected="false" aria-controls="p-sp-node" id="t-sp-node">Node</button>
+      <button role="tab" aria-selected="false" aria-controls="p-sp-py" id="t-sp-py">Python</button>
+      <button role="tab" aria-selected="false" aria-controls="p-sp-srv" id="t-sp-srv">OpenAI server</button>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-sp-cli" aria-labelledby="t-sp-cli">
+<pre><code data-lang="sh">apple-llm speak "Hello there"                     # out loud, in your System voice
+apple-llm speak "Hello" --voice Samantha --speed 1.2
+apple-llm speak --file book.txt -o book.m4a       # save it, any length
+apple-llm voices                                  # the voices you have
+apple-llm transcribe meeting.mp4                  # audio or video to text
+apple-llm transcribe meeting.mp4 -o meeting.srt   # subtitles
+apple-llm listen                                  # the microphone, live</code></pre>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-sp-node" aria-labelledby="t-sp-node" hidden>
+<pre><code data-lang="ts">import { listen, speak, synthesize, transcribe } from 'apple-llm';
+
+await speak('Hello there', { voice: 'Samantha', speed: 1.2 });
+
+const { audio } = await synthesize('Hello there', { format: 'wav' });
+await synthesize(longArticle, { voice: 'Samantha', out: 'article.m4a' });
+
+const { text, segments } = await transcribe('meeting.mp4');
+
+const said = await listen();   // returns when you pause</code></pre>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-sp-py" aria-labelledby="t-sp-py" hidden>
+<pre><code data-lang="py">from apple_llm import listen_once, speak, synthesize, transcribe
+
+speak("Hello there", voice="Samantha", speed=1.2)
+
+audio = synthesize("Hello there", format="wav").audio
+synthesize(long_article, voice="Samantha", out="article.m4a")
+
+result = transcribe("meeting.mp4")   # .text, .segments
+
+said = listen_once().text            # returns when you pause</code></pre>
+    </div>
+
+    <div class="codebox-panel" role="tabpanel" id="p-sp-srv" aria-labelledby="t-sp-srv" hidden>
+<pre><code data-lang="py">from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11436/v1", api_key="unused")
+
+speech = client.audio.speech.create(model="tts-1", voice="Samantha", input="Hello there")
+speech.write_to_file("hello.aac")
+
+client.audio.transcriptions.create(model="whisper-1", file=open("hello.aac", "rb")).text</code></pre>
+      <p class="codebox-note">On <code>apple-llm serve</code>, from the npm package. macOS can't encode MP3, so a request for it gets AAC, with a <code>Content-Type</code> that says so.</p>
+    </div>
+  </div>
+
+  <div class="notes">
+    <p><strong>Check the licence before you ship audio.</strong> Apple's licence allows its system voices for your personal, non-commercial use and rules out recording or publishing them in a commercial context. That covers every voice, and it's Apple's rule rather than ours. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">The clause, and what it means →</a></p>
+    <p><strong>Siri voices.</strong> Apple doesn't let apps choose them. Where macOS lists one under the System voice setting, you can pick it there and <code>speak</code> should use it; we haven't been able to test that yet. Timings are from an M4 MacBook Air on macOS 27.2.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────── 04 COMPARE -->
 <section class="sec wrap" id="compare">
-  <p class="sec-label"><span>03</span> Compared</p>
+  <p class="sec-label"><span>04</span> Compared</p>
   <div class="split split-top">
     <div class="split-head">
       <h2>How it stacks up.</h2>
@@ -259,9 +355,9 @@ apple-llm run --tier cloud "Plan a 3-day Lisbon trip on a budget."</code></pre>
   </div>
 </section>
 
-<!-- ─────────────────────────── 04 CODE -->
+<!-- ─────────────────────────── 05 CODE -->
 <section class="sec wrap" id="code">
-  <p class="sec-label"><span>04</span> Code</p>
+  <p class="sec-label"><span>05</span> Code</p>
   <div class="split split-top">
     <div class="split-head">
       <h2>Five ways in.</h2>
@@ -353,15 +449,17 @@ apple-llm run --tool ocr --image receipt.png "Read the total."
 apple-llm run --session trip "My cat is Biscuit."
 apple-llm rewrite "gonna grab a bite"              # also proofread, summarize, draft
 apple-llm ask-screen "Summarize what is on this schedule."
-apple-llm count --system "You are terse." -        # tokens before sending</code></pre>
+apple-llm count --system "You are terse." -        # tokens before sending
+apple-llm speak "Hello there"                      # out loud
+apple-llm transcribe meeting.mp4                   # audio or video to text</code></pre>
       <p class="codebox-note">The pip and npm packages install the same <code>apple-llm</code> command; <code>chat</code> and <code>serve</code> come with npm.</p>
     </div>
   </div>
 </section>
 
-<!-- ─────────────────────────── 05 FIT -->
+<!-- ─────────────────────────── 06 FIT -->
 <section class="sec wrap" id="fit">
-  <p class="sec-label"><span>05</span> Fit</p>
+  <p class="sec-label"><span>06</span> Fit</p>
   <div class="split">
     <div class="split-head">
       <h2>Small model, <em>right jobs.</em></h2>
@@ -391,9 +489,9 @@ apple-llm count --system "You are terse." -        # tokens before sending</code
   </div>
 </section>
 
-<!-- ─────────────────────────── 06 NOTES -->
+<!-- ─────────────────────────── 07 NOTES -->
 <section class="sec wrap" id="notes">
-  <p class="sec-label"><span>06</span> Field notes</p>
+  <p class="sec-label"><span>07</span> Field notes</p>
   <div class="split split-top">
     <div class="split-head">
       <h2>Fifteen constraints, <em>found the expensive way.</em></h2>
@@ -435,9 +533,9 @@ apple-llm count --system "You are terse." -        # tokens before sending</code
   <p class="more"><a class="link" href="https://github.com/jagdishpal02000/apple-llm#what-this-package-really-is">All of them, with measurements, in the README →</a></p>
 </section>
 
-<!-- ─────────────────────────── 07 FAQ -->
+<!-- ─────────────────────────── 08 FAQ -->
 <section class="sec wrap" id="faq">
-  <p class="sec-label"><span>07</span> Questions</p>
+  <p class="sec-label"><span>08</span> Questions</p>
   <dl class="faq">
     <div>
       <dt>Is it really free?</dt>
@@ -449,11 +547,23 @@ apple-llm count --system "You are terse." -        # tokens before sending</code
     </div>
     <div>
       <dt>What do I need?</dt>
-      <dd>macOS 26 or 27 on Apple Silicon, with Apple Intelligence on, plus the Xcode Command Line Tools (<code>xcode-select --install</code>). Full Xcode isn't needed. On anything else it installs but reports why it can't run.</dd>
+      <dd>macOS 26 or 27 on Apple Silicon, with Apple Intelligence on for the models (speech doesn't need it), plus the Xcode Command Line Tools (<code>xcode-select --install</code>). Full Xcode isn't needed. On anything else it installs but reports why it can't run.</dd>
     </div>
     <div>
       <dt>Does Python have everything Node has?</dt>
-      <dd>Not yet. Python has text, JSON with pydantic, streaming, sessions, images, Apple's built-in tools and the writing presets. Your own function tools, Zod, the server and the AI SDK provider are npm-only for now.</dd>
+      <dd>Not yet. Python has text, JSON with pydantic, streaming, sessions, images, Apple's built-in tools, the writing presets and all of speech. Your own function tools, Zod, the server and the AI SDK provider are npm-only for now.</dd>
+    </div>
+    <div>
+      <dt>Is long audio a problem?</dt>
+      <dd>No. On an M4 MacBook Air, 60 minutes of speech renders in 40 seconds and 30 minutes transcribes in 28. A read-aloud runs as long as your text does.</dd>
+    </div>
+    <div>
+      <dt>Can it use Siri's voice?</dt>
+      <dd>Apple doesn't let apps choose Siri voices, and asking for one by name gets the default voice. Where macOS lists one under the System voice setting, you can pick it there and <code>speak</code> should use it, though we haven't been able to test that yet. The other voices on your Mac all work, by name.</dd>
+    </div>
+    <div>
+      <dt>Can I use the audio in a product?</dt>
+      <dd>Check Apple's licence first. It allows system voices for personal, non-commercial use and rules out recording or publishing them in a commercial context. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">Here's the clause</a>. Speech recognition isn't covered by it.</dd>
     </div>
   </dl>
 </section>

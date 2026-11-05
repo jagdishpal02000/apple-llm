@@ -44,6 +44,23 @@ export function abortErrorFrom(signal: AbortSignal): Error {
   return new AbortError('The request was aborted.', undefined, { cause: reason });
 }
 
+/** Combine abort signals; `undefined` when there are none. */
+export function anySignal(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const list = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (list.length <= 1) return list[0];
+  const any = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof any === 'function') return any(list);
+  const controller = new AbortController();
+  for (const signal of list) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
 /**
  * A long-lived helper process speaking newline-delimited JSON.
  *

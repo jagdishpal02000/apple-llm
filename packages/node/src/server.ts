@@ -10,7 +10,8 @@
  * `response_format` with JSON Schema, images), `GET /v1/models` and
  * `GET /health`; and Ollama's `/api/chat`, `/api/generate`, `/api/tags`,
  * `/api/show`, `/api/ps` and `/api/version`, for the many apps that only speak
- * Ollama.
+ * Ollama. `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` do text to
+ * speech and speech recognition, and `GET /v1/audio/voices` lists the voices.
  *
  * Safe defaults, because a local model server is reachable by more than you
  * might think: it binds to 127.0.0.1 only; CORS is off, so a web page you
@@ -41,6 +42,7 @@ import {
 import { parseLlmJson } from './json-recovery.js';
 import type { ChatMessage } from './messages.js';
 import type { JsonSchema } from './schema.js';
+import { AppleSpeech, toSRT, toVTT, type AudioFormat, type Transcript } from './speech.js';
 import { tool, type FunctionTool } from './tools.js';
 
 export const DEFAULT_PORT = 11436;
@@ -63,6 +65,101 @@ export interface ServerOptions extends Omit<AppleLLMOptions, 'tier'> {
   cors?: string;
   /** One line per request. Default: none. */
   log?: (line: string) => void;
+  /** The speech client behind `/v1/audio/*`. Default: one of its own. For tests. */
+  speech?: AppleSpeech;
+}
+
+/** Largest audio upload. The CLI and the library read files of any size. */
+const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
+
+/**
+ * OpenAI's `response_format` values, as what can actually be made.
+ *
+ * MP3 is OpenAI's default and many clients ask for it by name, but macOS has no
+ * MP3 or Ogg encoder. Those requests get AAC rather than an error, because
+ * refusing would lock out every app that hardcodes "mp3". Browsers and players
+ * go by the bytes and the Content-Type, which says what it really is.
+ */
+const SPEECH_FORMATS: Record<string, { format: AudioFormat; type: string; sampleRate?: number }> = {
+  mp3: { format: 'aac', type: 'audio/aac' },
+  opus: { format: 'aac', type: 'audio/aac' },
+  aac: { format: 'aac', type: 'audio/aac' },
+  flac: { format: 'flac', type: 'audio/flac' },
+  wav: { format: 'wav', type: 'audio/wav' },
+  // OpenAI defines this as 24 kHz 16-bit little-endian, whatever the voice's own rate.
+  pcm: { format: 'pcm', type: 'audio/pcm', sampleRate: 24000 },
+  m4a: { format: 'm4a', type: 'audio/mp4' },
+  aiff: { format: 'aiff', type: 'audio/aiff' },
+};
+
+/** OpenAI's voice names, for clients that send one and cannot be told otherwise. */
+const OPENAI_VOICES = new Set([
+  'alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'fable', 'marin', 'nova', 'onyx', 'sage', 'shimmer', 'verse',
+]);
+
+interface SpeechRequest {
+  input?: unknown;
+  voice?: unknown;
+  response_format?: unknown;
+  speed?: unknown;
+}
+
+export interface MultipartPart {
+  name: string;
+  filename?: string;
+  data: Buffer;
+}
+
+/** `multipart/form-data`, which is how every OpenAI client uploads audio. */
+export function parseMultipart(body: Buffer, boundary: string): MultipartPart[] {
+  const parts: MultipartPart[] = [];
+  const delimiter = Buffer.from(`--${boundary}`);
+  const between = Buffer.from(`\r\n--${boundary}`);
+  let start = body.indexOf(delimiter);
+  while (start !== -1) {
+    let cursor = start + delimiter.length;
+    if (body[cursor] === 0x2d && body[cursor + 1] === 0x2d) break;
+    if (body[cursor] === 0x0d && body[cursor + 1] === 0x0a) cursor += 2;
+    const headersEnd = body.indexOf('\r\n\r\n', cursor);
+    if (headersEnd === -1) break;
+    const headers = body.subarray(cursor, headersEnd).toString('utf8');
+    const contentStart = headersEnd + 4;
+    const next = body.indexOf(between, contentStart);
+    if (next === -1) break;
+    const disposition = /content-disposition:([^\r\n]*)/i.exec(headers)?.[1] ?? '';
+    const name = /[;\s]name="([^"]*)"/i.exec(disposition)?.[1];
+    if (name !== undefined) {
+      const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
+      parts.push({ name, ...(filename === undefined ? {} : { filename }), data: body.subarray(contentStart, next) });
+    }
+    start = next + 2;
+  }
+  return parts;
+}
+
+/** OpenAI's `verbose_json`. Fields Whisper fills in and macOS has no equivalent for stay neutral. */
+function verboseTranscript(transcript: Transcript, words: boolean): Record<string, unknown> {
+  return {
+    task: 'transcribe',
+    language: transcript.language,
+    duration: transcript.duration,
+    text: transcript.text,
+    segments: transcript.segments.map((segment, id) => ({
+      id,
+      seek: 0,
+      start: segment.start,
+      end: segment.end,
+      text: segment.text,
+      tokens: [],
+      temperature: 0,
+      avg_logprob: 0,
+      compression_ratio: 1,
+      no_speech_prob: 0,
+    })),
+    ...(words
+      ? { words: transcript.segments.flatMap((segment) => (segment.words ?? []).map((word) => ({ word: word.text, start: word.start, end: word.end }))) }
+      : {}),
+  };
 }
 
 /** OpenAI's error envelope, with a status code chosen from the typed error. */
@@ -218,7 +315,7 @@ function usageOf(result: GenerateResult<unknown>): Record<string, number> | unde
   };
 }
 
-async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Promise<unknown> {
+async function readRawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -226,7 +323,11 @@ async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Pr
     if (size > limit) throw new HttpError(413, 'Request body too large.');
     chunks.push(chunk as Buffer);
   }
-  const text = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Promise<unknown> {
+  const text = (await readRawBody(req, limit)).toString('utf8');
   if (text === '') return {};
   try {
     return JSON.parse(text);
@@ -386,7 +487,9 @@ function jsonOnly(text: string): string {
 
 /** Build the server without listening. `serve()` is the one-liner. */
 export function createServer(options: ServerOptions = {}): http.Server {
-  const { port: _port, host: _host, tier: defaultTier = 'device', apiKey, cors, log, ...llmOptions } = options;
+  const { port: _port, host: _host, tier: defaultTier = 'device', apiKey, cors, log, speech: givenSpeech, ...llmOptions } = options;
+  let ownSpeech: AppleSpeech | undefined;
+  const speechClient = (): AppleSpeech => givenSpeech ?? (ownSpeech ??= new AppleSpeech());
   const clients = new Map<string, AppleLLM>();
   const clientFor = (tier: 'device' | 'cloud' | 'auto'): AppleLLM => {
     let client = clients.get(tier);
@@ -451,6 +554,12 @@ export function createServer(options: ServerOptions = {}): http.Server {
         const body = (await readBody(req)) as ChatRequest;
         return chatCompletions(body);
       }
+      if (req.method === 'POST' && pathname === '/v1/audio/speech') return audioSpeech();
+      if (req.method === 'POST' && pathname === '/v1/audio/transcriptions') return audioTranscription();
+      if (req.method === 'GET' && pathname === '/v1/audio/voices') {
+        send(200, { object: 'list', data: await speechClient().voices() });
+        return undefined;
+      }
       if (pathname === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
         // Ollama clients look for this text to tell that a server is up.
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...corsHeaders() });
@@ -467,6 +576,74 @@ export function createServer(options: ServerOptions = {}): http.Server {
       }
       send(404, { error: { message: `No route for ${req.method} ${pathname}.`, type: 'invalid_request_error', code: 'not_found', param: null } });
       return undefined;
+    };
+
+    const audioSpeech = async (): Promise<string> => {
+      const body = (await readBody(req)) as SpeechRequest;
+      if (typeof body.input !== 'string' || body.input.trim() === '') {
+        throw new HttpError(400, '`input` must be a non-empty string.');
+      }
+      const wanted = body.response_format === undefined ? 'mp3' : String(body.response_format);
+      const output = SPEECH_FORMATS[wanted];
+      if (output === undefined) {
+        throw new HttpError(400, `\`response_format\` must be one of ${Object.keys(SPEECH_FORMATS).join(', ')} (got "${wanted}").`);
+      }
+      const named = typeof body.voice === 'string' ? body.voice : undefined;
+      const voice = named === undefined || OPENAI_VOICES.has(named.toLowerCase()) ? undefined : named;
+      // OpenAI accepts 0.25 to 4, and macOS clamps below what it can do.
+      const speed = typeof body.speed === 'number' ? Math.min(4, Math.max(0.25, body.speed)) : undefined;
+      const made = await speechClient().synthesize(body.input, {
+        voice,
+        speed,
+        format: output.format,
+        sampleRate: output.sampleRate,
+        signal: controller.signal,
+      });
+      res.writeHead(200, {
+        'content-type': output.type,
+        'content-length': String(made.audio.length),
+        'x-apple-llm-voice': made.voice.name,
+        ...corsHeaders(),
+      });
+      res.end(made.audio);
+      return `audio/speech ${made.voice.name} ${made.duration.toFixed(1)}s`;
+    };
+
+    const audioTranscription = async (): Promise<string> => {
+      const contentType = req.headers['content-type'] ?? '';
+      const boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+      if (!/^multipart\/form-data/i.test(contentType) || boundary === null) {
+        throw new HttpError(400, 'Send the audio as multipart/form-data, with the audio in a `file` field.');
+      }
+      const parts = parseMultipart(await readRawBody(req, MAX_UPLOAD_BYTES), boundary[1] ?? boundary[2]);
+      const file = parts.find((part) => part.name === 'file');
+      if (file === undefined || file.data.length === 0) throw new HttpError(400, 'The `file` field is missing or empty.');
+      const field = (name: string): string | undefined => parts.find((part) => part.name === name)?.data.toString('utf8');
+      const format = field('response_format') ?? 'json';
+      if (!['json', 'text', 'srt', 'vtt', 'verbose_json'].includes(format)) {
+        throw new HttpError(400, `\`response_format\` must be json, text, srt, verbose_json or vtt (got "${format}").`);
+      }
+      const granularities = parts.filter((part) => part.name === 'timestamp_granularities[]' || part.name === 'timestamp_granularities').map((part) => part.data.toString('utf8'));
+      const wantWords = granularities.includes('word');
+      const prompt = field('prompt');
+      const transcript = await speechClient().transcribe(file.data, {
+        filename: file.filename,
+        language: field('language'),
+        words: wantWords || format === 'srt' || format === 'vtt',
+        // Whisper's prompt is free text and this takes terms, so lines and commas split it.
+        hints: prompt?.split(/[\n,]+/).map((term) => term.trim()).filter(Boolean),
+        signal: controller.signal,
+      });
+      if (format === 'json') {
+        send(200, { text: transcript.text });
+      } else if (format === 'verbose_json') {
+        send(200, verboseTranscript(transcript, wantWords));
+      } else {
+        const text = format === 'srt' ? toSRT(transcript) : format === 'vtt' ? toVTT(transcript) : transcript.text;
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...corsHeaders() });
+        res.end(text);
+      }
+      return `audio/transcriptions ${transcript.language} ${transcript.duration.toFixed(1)}s`;
     };
 
     /**
@@ -718,6 +895,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
 
   server.on('close', () => {
     for (const client of clients.values()) client.close();
+    ownSpeech?.close();
   });
   return server;
 }
