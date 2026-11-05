@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.3.0
+
+### Fixed
+
+- **The cloud tier "not working": `Apple cloud generation failed: Error: Your
+  request can't be completed right now.`** That sentence is all `shortcuts run`
+  says when Private Cloud Compute's per-device rate limit turns a request away
+  (`deniedDueToUserDeviceRateLimit` underneath). It is a different limiter from
+  the quota `probe()` reads, which keeps saying `belowLimit` the whole time, so
+  nothing warned of it and the error read like a bug. Ten calls in about two
+  minutes tripped it, and it then refused every call for a few minutes. It
+  is now a `QuotaError` that says what happened and what to do; the server
+  answers it with HTTP 429 and `x-should-retry: false`, so OpenAI SDKs fail fast
+  instead of retrying seconds later into a lockout that lasts much longer.
+- **`json()` on the cloud tier answering in prose.** With the JSON request placed
+  before the question, the server model answered "Give me a city in France"
+  with `Paris, population 2161000` — the right fields, not JSON — and the repair
+  attempt failed the same way. The request now follows the question, and the
+  repair shows the model the answer it is repairing: every call is a fresh
+  session, so "your previous answer" meant nothing to it.
+- The server's `model` field names the model that actually answered; with
+  `--tier auto` it said `apple-on-device` even when the cloud had answered.
+
+### Added
+
+- **Speech: text to speech and speech to text, on device.** `speak()`,
+  `synthesize()`, `listVoices()`, `transcribe()`, `transcribeStream()`, `listen()`
+  and the `apple-llm speak`, `voices`, `transcribe`, `listen` and `languages`
+  commands. Neither needs Apple Intelligence or costs quota. Text to speech reaches
+  every voice on the Mac, out loud or to WAV, M4A, AAC, FLAC, AIFF, CAF or raw PCM,
+  with speed, pitch, volume, SSML and word timings. Speech to text reads audio and
+  MP4 or MOV video of any length, or the microphone live, in 68 languages, with word
+  timings and SRT or VTT subtitles. On an M4 Air, 60 minutes of speech renders in 40
+  seconds and 30 minutes transcribes in 28. The helper gains all this, so the first
+  call after upgrading compiles it once more.
+- **`POST /v1/audio/speech`, `POST /v1/audio/transcriptions` and
+  `GET /v1/audio/voices` on `apple-llm serve`**, checked with the official `openai`
+  SDK. macOS cannot encode MP3 or Opus, so requests for those get AAC, with a
+  `Content-Type` that says so.
+- **`PermissionDeniedError`**, for a refused microphone.
+- **`fallback: 'device'`** (`--fallback device` on `run`, `chat` and `serve`):
+  with the cloud tier, answer on device when Apple turns a request away. The
+  result's `tier` says which model answered.
+- **Ollama-compatible API on `apple-llm serve`**, beside the OpenAI one:
+  `/api/chat` and `/api/generate` (NDJSON streaming, `format` as `"json"` or a
+  JSON Schema, tools, images, `options`), `/api/tags`, `/api/show`, `/api/ps`
+  and `/api/version`. Most Mac apps for local models speak Ollama's API, so
+  `apple-llm serve --port 11434` makes Apple's model available in them with no
+  code. Checked against the Ollama CLI itself: `ollama list`, `show` and `run`,
+  with `--format json`.
+- **A shell-friendly CLI.** `apple-llm "question"` is short for `apple-llm run
+  "question"`, and text piped into `run` goes in before the prompt:
+  `git diff | apple-llm "Write a commit message for this"`. Only a pipe or a
+  redirected file is read, so a script that leaves stdin open does not hang it.
+- A `ContextLengthError` on device now points at the cloud tier's 32k window,
+  and `serve` explains a port that is already taken (on 11434, usually Ollama).
+
+### Python
+
+- **Speech**, as in Node: `speak()`, `synthesize()`, `list_voices()`,
+  `transcribe()`, `listen()`, `listen_once()`, `AppleSpeech`, `AsyncAppleSpeech` and
+  the same commands. Adds `UnsupportedError`, `PermissionDeniedError` and
+  `CancelledError`.
+- The same rate-limit and cloud-JSON fixes, `fallback="device"`, and the CLI
+  shorthand and piping.
+- **Fixed `apple-llm run --stream` crashing** with `TypeError: AppleLLM.stream()
+  got an unexpected keyword argument 'web_search'`, on every tier.
+- `stream()` and `documents` now work on the cloud tier, as in Node (the reply
+  arrives as one delta). A cloud `json()` reply with no JSON in it raises
+  `SchemaValidationError` after one repair — still a `ValueError`, which is what
+  it raised before.
+
 ## 0.2.0
 
 The helper speaks a new protocol, so the first call after upgrading compiles it

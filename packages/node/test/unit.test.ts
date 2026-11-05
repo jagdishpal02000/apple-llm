@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { shortcutDefinition, CLOUD_SHORTCUT_NAME } from '../src/cloud.js';
+import { shortcutDefinition, describeRunFailure, CLOUD_SHORTCUT_NAME } from '../src/cloud.js';
+import {
+  AppleLLMError,
+  ContextLengthError,
+  QuotaError,
+  SetupRequiredError,
+  TimeoutError,
+} from '../src/errors.js';
 import { assertTools, parseImageFlag, withDocuments } from '../src/device.js';
 import { extractJsonSpan, parseLlmJson, stripCodeFences } from '../src/json-recovery.js';
 import { targetTripleFrom } from '../src/target.js';
@@ -58,6 +65,30 @@ describe('shortcut definition', () => {
 
   it('has a distinctive name so `shortcuts run` cannot match a user shortcut', () => {
     expect(CLOUD_SHORTCUT_NAME).toMatch(/Apple LLM/);
+  });
+});
+
+describe('cloud run failures', () => {
+  const fail = (stderr: string) => describeRunFailure({ stderr, message: 'Command failed' });
+
+  it("names Apple's per-device rate limit, which Shortcuts reports only as one sentence", () => {
+    // What `shortcuts run` prints while privatecloudcomputed is denying
+    // requests with deniedDueToUserDeviceRateLimit.
+    const error = fail("Error: Your request can't be completed right now.\n");
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ code: 'QUOTA', tier: 'cloud' });
+    expect(error.message).toMatch(/rate-limiting this Mac/);
+    expect(fail('Error: Your request can’t be completed right now.')).toBeInstanceOf(QuotaError);
+  });
+
+  it('keeps the other failures apart', () => {
+    expect(fail('Error: The input exceeds the maximum allowed length.')).toBeInstanceOf(ContextLengthError);
+    expect(fail('Error: QuotaLimitReached')).toBeInstanceOf(QuotaError);
+    expect(fail('Error: Couldn’t find shortcut "Apple LLM Cloud"')).toBeInstanceOf(SetupRequiredError);
+    expect(describeRunFailure({ killed: true })).toBeInstanceOf(TimeoutError);
+    const other = fail('Error: something new');
+    expect(other.constructor).toBe(AppleLLMError);
+    expect(other.message).toContain('something new');
   });
 });
 

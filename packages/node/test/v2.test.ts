@@ -624,8 +624,62 @@ describe('cloud tier, with Shortcuts stubbed out', () => {
     });
     expect(person).toEqual({ name: 'Ada', email: 'ada@example.com' });
     expect(prompts).toHaveLength(2);
-    expect(prompts[1].prompt).toMatch(/previous answer was rejected: email/i);
-    expect(prompts[0].system).toContain('"email"');
+    // The repair shows the model what it said: each call is a fresh session.
+    expect(prompts[1].prompt).toContain('"email":"nope"');
+    expect(prompts[1].prompt).toMatch(/It was rejected: email/i);
+    restore();
+  });
+
+  it('asks for JSON after the question, not before it', async () => {
+    const { llm, prompts, restore } = await cloud(['{"city":"Paris"}']);
+    await llm.json('Give me a city in France', {
+      system: 'You are terse.',
+      schema: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+    });
+    // Placed first, the server model answered with prose; placed last, JSON.
+    expect(prompts[0].system).toBe('You are terse.');
+    expect(prompts[0].prompt.indexOf('Give me a city in France')).toBe(0);
+    expect(prompts[0].prompt).toMatch(/only a JSON value[\s\S]*"city"/);
+    restore();
+  });
+
+  it('answers on device when Apple rate-limits the cloud and fallback is set', async () => {
+    const { vi } = await import('vitest');
+    const { CloudClient, describeRunFailure } = await import('../src/cloud.js');
+    const { AppleLLM } = await import('../src/client.js');
+    const rateLimited = describeRunFailure({ stderr: "Error: Your request can't be completed right now.\n" });
+    vi.spyOn(CloudClient.prototype, 'ensureReady').mockResolvedValue();
+    vi.spyOn(CloudClient.prototype, 'text').mockRejectedValue(rateLimited);
+    vi.spyOn(DeviceClient.prototype, 'ensureReady').mockResolvedValue();
+    const run = vi
+      .spyOn(DeviceClient.prototype, 'run')
+      .mockResolvedValue({ content: 'from the device', finishReason: 'stop', toolCalls: [], trimmedTurns: 0 });
+    try {
+      // Without fallback the typed error surfaces, and the device is never asked.
+      const strict = new AppleLLM({ tier: 'cloud' });
+      await expect(strict.text('hi')).rejects.toMatchObject({ code: 'QUOTA', tier: 'cloud' });
+      expect(run).not.toHaveBeenCalled();
+
+      const lenient = new AppleLLM({ tier: 'cloud', fallback: 'device' });
+      const result = await lenient.generate('hi');
+      expect(result.text).toBe('from the device');
+      expect(result.tier).toBe('device');
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('repairs a streamed object too, since nothing reached the reader yet', async () => {
+    const { llm, prompts, restore } = await cloud(['Paris, population 2161000', '{"city":"Paris"}']);
+    const partials: unknown[] = [];
+    const stream = llm.streamJson('Give me a city in France', {
+      schema: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+    });
+    for await (const partial of stream) partials.push(partial);
+    expect(await stream).toEqual({ city: 'Paris' });
+    expect(partials).toEqual([{ city: 'Paris' }]);
+    expect(prompts[1].prompt).toContain('Paris, population 2161000');
     restore();
   });
 
@@ -662,7 +716,7 @@ describe('cloud tier against a fake `shortcuts` binary', () => {
   // A stand-in for /usr/bin/shortcuts on PATH: it records its arguments and
   // writes a reply, so CloudClient runs for real with no quota spent.
   const onAppleSilicon = process.platform === 'darwin' && process.arch === 'arm64';
-  const withFakeShortcuts = async (run: (argsFile: string) => Promise<void>): Promise<void> => {
+  const withFakeShortcuts = async (run: (argsFile: string) => Promise<void>, list = 'echo "Apple LLM Cloud"'): Promise<void> => {
     const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const path = await import('node:path');
@@ -673,7 +727,7 @@ describe('cloud tier against a fake `shortcuts` binary', () => {
       script,
       [
         '#!/bin/bash',
-        'if [ "$1" = "list" ]; then echo "Apple LLM Cloud"; exit 0; fi',
+        `if [ "$1" = "list" ]; then ${list}; exit $?; fi`,
         `printf '%s\n' "$@" > ${JSON.stringify(argsFile)}`,
         'out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done',
         'echo "fake reply" > "$out"',
@@ -689,6 +743,28 @@ describe('cloud tier against a fake `shortcuts` binary', () => {
       await rm(dir, { recursive: true, force: true });
     }
   };
+
+  it.runIf(onAppleSilicon)('reports Shortcuts failures without claiming setup is missing', async () => {
+    const { CloudClient, probeCloud, installCount } = await import('../src/cloud.js');
+    await withFakeShortcuts(async () => {
+      expect(await probeCloud()).toMatchObject({ available: false, reason: expect.stringContaining('helper application') });
+      expect((await probeCloud()).installed).toBeUndefined();
+      await expect(installCount()).rejects.toThrow(/helper application/);
+      await expect(new CloudClient().ensureReady()).rejects.toMatchObject({ code: 'APPLE_LLM_ERROR', message: expect.stringContaining('helper application') });
+    }, 'echo "Could not communicate with a helper application" >&2; exit 1');
+  });
+
+  it.runIf(onAppleSilicon)('distinguishes a missing shortcut from duplicate shortcuts', async () => {
+    const { CloudClient, probeCloud } = await import('../src/cloud.js');
+    await withFakeShortcuts(async () => {
+      expect(await probeCloud()).toMatchObject({ available: false, installed: false });
+      await expect(new CloudClient().ensureReady()).rejects.toMatchObject({ code: 'SETUP_REQUIRED' });
+    }, 'exit 0');
+    await withFakeShortcuts(async () => {
+      expect(await probeCloud()).toMatchObject({ available: false, installed: true, reason: expect.stringContaining('2 shortcuts') });
+      await expect(new CloudClient().ensureReady()).rejects.toMatchObject({ code: 'APPLE_LLM_ERROR', message: expect.stringContaining('2 shortcuts') });
+    }, 'printf "Apple LLM Cloud\\nApple LLM Cloud\\n"; exit 0');
+  });
 
   it.runIf(onAppleSilicon)('passes the prompt file and each image as inputs', async () => {
     const { readFile } = await import('node:fs/promises');

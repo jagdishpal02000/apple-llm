@@ -22,7 +22,8 @@ export type ErrorCode =
   | 'REFUSAL'
   | 'TOOL_EXECUTION'
   | 'MODEL_BUSY'
-  | 'UNSUPPORTED';
+  | 'UNSUPPORTED'
+  | 'PERMISSION_DENIED';
 
 export interface AppleLLMErrorOptions {
   cause?: unknown;
@@ -146,6 +147,15 @@ export class ModelBusyError extends AppleLLMError {
 /** A capability this tier, OS or model does not have. */
 export class UnsupportedError extends AppleLLMError {
   override readonly code = 'UNSUPPORTED';
+}
+
+/**
+ * macOS refused access to something — so far only the microphone. The message
+ * says which setting to change. Permission belongs to the app that launched
+ * this process: Terminal, VS Code, your own app.
+ */
+export class PermissionDeniedError extends AppleLLMError {
+  override readonly code = 'PERMISSION_DENIED';
 }
 
 /** Turn an unavailability reason into something the user can act on. */

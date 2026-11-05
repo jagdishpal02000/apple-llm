@@ -320,7 +320,8 @@ function raiseFor(response: HelperResponse, raw: string, toolFailure?: { name: s
       );
     case 'context':
       throw new ContextLengthError(
-        `The prompt exceeded the on-device context window: ${detail}`,
+        `The prompt exceeded the on-device context window: ${detail}\n` +
+          "Shorten it, or use the cloud tier's 32,768-token window (tier: 'cloud', --tier cloud).",
         'device',
         response.contextSize,
         response.tokenCount,

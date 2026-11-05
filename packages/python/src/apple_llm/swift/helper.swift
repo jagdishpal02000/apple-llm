@@ -85,9 +85,48 @@
 //   state available to an unentitled process. It also reports `features` so callers can fail
 //   fast with a message instead of a stale binary's silent misbehaviour.
 //
+//   Speech (macOS 26+). These ops never touch the language model, so they work
+//   with Apple Intelligence turned off. A client should run them on a helper of
+//   their own: requests are handled one at a time, and a long transcription
+//   must not hold up generation.
+//     {"op":"voices"}
+//       -> {"ok":true,"voices":[{id,name,language,quality,gender,novelty,
+//                                personal,default,engine}],"systemVoice":{..}}
+//     {"op":"speak","text":string,"voice"?:string,"language"?:string,"ssml"?:bool,
+//      "speed"?:number,"pitch"?:number,"volume"?:number,"words"?:bool}
+//       -> {"ok":true,"spoken":true,"duration":number,"voice":{..}}
+//     {"op":"synthesize", ...the same..., "out":path,"format"?:string,"sampleRate"?:number}
+//       -> {"ok":true,"path","format","duration","sampleRate","bytes","voice","words"?}
+//     {"op":"transcribe","path":string,"language"?:string,"words"?:bool,
+//      "alternatives"?:bool,"hints"?:[string],"download"?:bool}
+//       -> {"ok":true,"text","segments":[{text,start,end,confidence?,words?,
+//           alternatives?}],"language","engine","duration"}
+//     {"op":"listen","language"?:string,"silence"?:number,"maxSeconds"?:number,
+//      "words"?:bool,"hints"?:[string],"download"?:bool}
+//       -> the same as transcribe; {"op":"endInput"} finishes it and keeps the
+//          text, where "cancel" discards it.
+//     {"op":"speechLanguages"}
+//       -> {"ok":true,"languages":[{id,name,installed,engine}],"default":string}
+//     {"op":"installSpeechLanguage","language":string} -> {"ok":true,"language":string}
+//     {"op":"removeSpeechLanguage","language":string}  -> {"ok":true,"removed":bool}
+//   events:  {"ok":true,"heartbeat":true,"done":false}       // every 20s, so a
+//                                                            //  30 minute read-aloud
+//                                                            //  is not taken for a wedge
+//          | {"ok":true,"word":{text,start,end,offset,length},"done":false}  // speak
+//          | {"ok":true,"started":{language,engine,duration},"done":false}   // transcribe
+//          | {"ok":true,"segment":{..},"done":false}                         // transcribe
+//          | {"ok":true,"listening":true,"language":string,"done":false}     // listen
+//          | {"ok":true,"transcript":{text,final,start,end,..},"done":false} // listen
+//          | {"ok":true,"download":{language,fraction},"done":false}
+//   extra failure kinds: permission | setup (a language model is not installed)
+//                        | speech
+//
 
+import AVFoundation
+import AppKit
 import Foundation
 import FoundationModels
+import Speech
 #if canImport(_Vision_FoundationModels)
 import _Vision_FoundationModels
 #endif
@@ -153,17 +192,27 @@ private final class Control: @unchecked Sendable {
     private var cancelledEarly: Set<String> = []
     private var waiting: [String: CheckedContinuation<ToolReply, Never>] = [:]
     private var closed = false
+    /// Finishes a running `listen`, keeping what it heard.
+    private var endInput: (() -> Void)?
+
+    /// Register what an `endInput` line should do; nil when nothing is listening.
+    func onEndInput(_ action: (() -> Void)?) {
+        lock.withLock { endInput = action }
+    }
 
     /// True when `line` was a control message and has been handled here.
     func intercept(_ line: String) -> Bool {
         // Cheap pre-check: a prompt can be tens of KB, and most lines are
-        // requests, which never carry these two ops.
-        guard line.contains("\"cancel\"") || line.contains("\"toolResult\""),
+        // requests, which never carry these ops.
+        guard line.contains("\"cancel\"") || line.contains("\"toolResult\"") || line.contains("\"endInput\""),
               let object = jsonValue(line) as? [String: Any],
               let op = object["op"] as? String else { return false }
         switch op {
         case "cancel":
             cancel(id: object["id"] as? String)
+            return true
+        case "endInput":
+            lock.withLock { endInput }?()
             return true
         case "toolResult":
             guard let callId = object["callId"] as? String else { return true }
@@ -901,6 +950,12 @@ private func finishReason(usage: [String: Any]?, maxTokens: Int?) -> String {
 /// one-shot and serve modes cannot drift apart.
 @available(macOS 26.0, *)
 private func handle(envelope: [String: Any]) async {
+    // Speech goes first: handleEnvelope turns everything away when the language
+    // model is unavailable, and speech does not need it.
+    if let op = envelope["op"] as? String, speechOps.contains(op) {
+        await handleSpeech(op: op, envelope: envelope)
+        return
+    }
     await handleEnvelope(envelope: envelope, streaming: false)
 }
 
@@ -1303,6 +1358,1537 @@ private func cloudModel() async -> [String: Any] {
     return out
 }
 
+// MARK: - Speech
+
+private let speechOps: Set<String> = [
+    "voices", "speak", "synthesize", "transcribe", "listen",
+    "speechLanguages", "installSpeechLanguage", "removeSpeechLanguage",
+]
+
+/// Why a speech op failed, in the `kind` vocabulary the clients map to typed errors.
+private enum SpeechFailure: Error {
+    case unsupported(String)
+    case permission(String)
+    /// The language's model is not installed and the caller said not to download it.
+    case notInstalled(language: String, message: String)
+    case failed(String)
+}
+
+private func speechFailure(_ error: Error) -> [String: Any] {
+    if error is CancellationError {
+        return ["ok": false, "kind": "cancelled", "error": "the request was cancelled"]
+    }
+    guard let failure = error as? SpeechFailure else {
+        return ["ok": false, "kind": "speech", "error": (error as NSError).localizedDescription]
+    }
+    switch failure {
+    case .unsupported(let message): return ["ok": false, "kind": "unsupported", "error": message]
+    case .permission(let message): return ["ok": false, "kind": "permission", "error": message]
+    case .notInstalled(let language, let message):
+        return ["ok": false, "kind": "setup", "language": language, "error": message]
+    case .failed(let message): return ["ok": false, "kind": "speech", "error": message]
+    }
+}
+
+@available(macOS 26.0, *)
+private func handleSpeech(op: String, envelope: [String: Any]) async {
+    do {
+        let payload: [String: Any] = try await withHeartbeat {
+            switch op {
+            case "voices": return voicesPayload()
+            case "speak": return try await speakAloud(envelope)
+            case "synthesize": return try await synthesizeToFile(envelope)
+            case "transcribe": return try await transcribeFile(envelope)
+            case "listen": return try await listenToMicrophone(envelope)
+            case "speechLanguages": return try await languagesPayload()
+            case "installSpeechLanguage": return try await installLanguage(envelope)
+            default: return await removeLanguage(envelope)
+            }
+        }
+        emit(payload)
+    } catch {
+        emit(speechFailure(error))
+    }
+}
+
+/// Keep the client's wedge timer quiet while a long op runs.
+///
+/// That timer measures silence, and it is the one real limit on long audio:
+/// Apple renders an hour of speech without complaint, but a 30 minute read-aloud
+/// emits nothing between its first and last word unless something says it is
+/// still alive. The beat is awaited on the way out, so no event can follow the
+/// final line.
+private func withHeartbeat<T>(_ body: () async throws -> T) async throws -> T {
+    let beat = Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            if !Task.isCancelled { emit(["ok": true, "heartbeat": true, "done": false]) }
+        }
+    }
+    do {
+        let result = try await body()
+        beat.cancel()
+        _ = await beat.value
+        return result
+    } catch {
+        beat.cancel()
+        _ = await beat.value
+        throw error
+    }
+}
+
+/// Runs a closure at most once, whichever of several racing callers gets there.
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func run(_ body: () -> Void) {
+        let first = lock.withLock { () -> Bool in
+            if fired { return false }
+            fired = true
+            return true
+        }
+        if first { body() }
+    }
+}
+
+/// A cancellation target for code that starts running after the task may
+/// already have been cancelled.
+private final class Canceller: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+    private var cancelled = false
+
+    func set(_ newAction: @escaping () -> Void) {
+        let runNow = lock.withLock { () -> Bool in
+            if cancelled { return true }
+            action = newAction
+            return false
+        }
+        if runNow { newAction() }
+    }
+
+    func cancel() {
+        let pending = lock.withLock { () -> (() -> Void)? in
+            cancelled = true
+            defer { action = nil }
+            return action
+        }
+        pending?()
+    }
+}
+
+private func seconds(_ time: CMTime) -> Double {
+    guard time.isNumeric else { return 0 }
+    return (time.seconds * 1000).rounded() / 1000
+}
+
+/// JSON readable by people: 0.801, not 0.8009999999999999.
+private func rounded3(_ value: Double) -> Double {
+    (value * 1000).rounded() / 1000
+}
+
+// MARK: Voices
+
+/// One voice, however it is reached.
+///
+/// `AVSpeechSynthesizer` is the better engine: word timings, pitch, volume and
+/// SSML. But it lists fewer voices than macOS has — Aman, Tara, Aru and Ona were
+/// audibly distinct through `say` and absent from `speechVoices()` on macOS 27 —
+/// so those are reached through `say` rather than left out.
+private struct SpeechVoice {
+    let id: String
+    let name: String
+    let fullName: String
+    let language: String
+    let quality: String
+    let gender: String
+    let novelty: Bool
+    let personal: Bool
+    let avVoice: AVSpeechSynthesisVoice?
+
+    func json(isDefault: Bool) -> [String: Any] {
+        ["id": id, "name": name, "language": language, "quality": quality, "gender": gender,
+         "novelty": novelty, "personal": personal, "default": isDefault,
+         "engine": avVoice == nil ? "say" : "avspeech"]
+    }
+
+    var summary: [String: Any] {
+        ["id": id, "name": name, "language": language, "engine": avVoice == nil ? "say" : "avspeech"]
+    }
+}
+
+/// "Daniel (English (UK))" and "Aru ((null))" are how macOS names voices for
+/// `say`; the name a person means is the part before the bracket.
+private func baseVoiceName(_ full: String) -> String {
+    full.components(separatedBy: " (").first ?? full
+}
+
+/// Listing voices costs about 100ms, and that would land on every call. A voice
+/// downloaded in System Settings shows up within the minute.
+private final class VoiceCatalogCache: @unchecked Sendable {
+    static let shared = VoiceCatalogCache()
+    private let lock = NSLock()
+    private var voices: [SpeechVoice] = []
+    private var stamp = Date.distantPast
+
+    func current() -> [SpeechVoice] {
+        lock.withLock {
+            if Date().timeIntervalSince(stamp) > 60 {
+                voices = buildVoiceCatalog()
+                stamp = Date()
+            }
+            return voices
+        }
+    }
+}
+
+private func voiceCatalog() -> [SpeechVoice] {
+    VoiceCatalogCache.shared.current()
+}
+
+private func buildVoiceCatalog() -> [SpeechVoice] {
+    var out: [SpeechVoice] = []
+    var known = Set<String>()
+    for voice in AVSpeechSynthesisVoice.speechVoices() {
+        let quality: String
+        switch voice.quality {
+        case .premium: quality = "premium"
+        case .enhanced: quality = "enhanced"
+        default: quality = "default"
+        }
+        let gender: String
+        switch voice.gender {
+        case .female: gender = "female"
+        case .male: gender = "male"
+        default: gender = "unspecified"
+        }
+        let language = voice.language.replacingOccurrences(of: "_", with: "-")
+        known.insert("\(voice.name)|\(language)")
+        out.append(SpeechVoice(
+            id: voice.identifier, name: voice.name, fullName: voice.name, language: language,
+            quality: quality, gender: gender, novelty: voice.voiceTraits.contains(.isNoveltyVoice),
+            personal: voice.voiceTraits.contains(.isPersonalVoice), avVoice: voice))
+    }
+    for raw in NSSpeechSynthesizer.availableVoices {
+        // The two APIs can disagree on a voice's id (compact, super-compact) and
+        // its language (zh-HK, yue-HK), but AVSpeech resolves either spelling.
+        if AVSpeechSynthesisVoice(identifier: raw.rawValue) != nil { continue }
+        let attributes = NSSpeechSynthesizer.attributes(forVoice: raw)
+        let full = attributes[.name] as? String ?? raw.rawValue
+        let name = baseVoiceName(full)
+        let language = (attributes[.localeIdentifier] as? String ?? "").replacingOccurrences(of: "_", with: "-")
+        // The same voice often appears twice, as a base id and a .premium one,
+        // and `say` can only tell them apart by name anyway.
+        guard known.insert("\(name)|\(language)").inserted else { continue }
+        let gender = attributes[.gender] as? String ?? ""
+        out.append(SpeechVoice(
+            id: raw.rawValue, name: name, fullName: full, language: language, quality: "default",
+            gender: gender.contains("Female") ? "female" : gender.contains("Male") ? "male" : "unspecified",
+            novelty: false, personal: false, avVoice: nil))
+    }
+    return out
+}
+
+/// The "System voice" setting under System Settings › Accessibility. Only this
+/// deprecated API names it: `AVSpeechSynthesisVoice(language:)` picks a voice
+/// for the language, which is not the same thing.
+private func systemVoiceId() -> String {
+    NSSpeechSynthesizer.defaultVoice.rawValue
+}
+
+private func voicesPayload() -> [String: Any] {
+    let systemId = systemVoiceId()
+    // AVSpeech and NSSpeech can spell one voice two ways (compact, super-compact).
+    let matchId = AVSpeechSynthesisVoice(identifier: systemId)?.identifier ?? systemId
+    let catalog = voiceCatalog()
+    let attributes = NSSpeechSynthesizer.attributes(forVoice: NSSpeechSynthesizer.VoiceName(rawValue: systemId))
+    let systemName = baseVoiceName(attributes[.name] as? String ?? systemId)
+    return [
+        "ok": true,
+        "voices": catalog.map { $0.json(isDefault: $0.id == matchId) },
+        "systemVoice": [
+            "id": systemId,
+            "name": systemName,
+            "language": (attributes[.localeIdentifier] as? String ?? "").replacingOccurrences(of: "_", with: "-"),
+            "siri": systemId.lowercased().contains("siri"),
+            "listed": catalog.contains { $0.id == matchId },
+        ] as [String: Any],
+    ]
+}
+
+/// Lower sorts first. System voice, then real voices over novelties, then the
+/// best quality, then the speaker's own region, then AVSpeech over `say`.
+private func voiceRank(_ voice: SpeechVoice, systemId: String, likelyRegion: String?) -> [Int] {
+    let qualityRank = ["premium": 0, "enhanced": 1][voice.quality] ?? 2
+    let region = voice.language.split(separator: "-").last.map(String.init)?.uppercased()
+    return [
+        voice.id == systemId ? 0 : 1,
+        voice.novelty ? 1 : 0,
+        qualityRank,
+        region == Locale.current.region?.identifier ? 0 : 1,
+        region == likelyRegion ? 0 : 1,
+        voice.avVoice == nil ? 1 : 0,
+        voice.id.hasPrefix("com.apple.voice.") ? 0 : 1,
+    ]
+}
+
+private func bestVoice(_ voices: [SpeechVoice], language: String?) -> SpeechVoice? {
+    let systemId = systemVoiceId()
+    let matchId = AVSpeechSynthesisVoice(identifier: systemId)?.identifier ?? systemId
+    let likely = language.flatMap { Locale.Language(identifier: $0).maximalIdentifier.split(separator: "-").last.map(String.init)?.uppercased() }
+    return voices.min { a, b in
+        let (ra, rb) = (voiceRank(a, systemId: matchId, likelyRegion: likely),
+                        voiceRank(b, systemId: matchId, likelyRegion: likely))
+        return ra.lexicographicallyPrecedes(rb)
+    }
+}
+
+/// Exact language first, then the same language in any region: "fr" and "fr-CH"
+/// both find a French voice.
+private func voices(in catalog: [SpeechVoice], speaking wanted: String) -> [SpeechVoice] {
+    let normal = wanted.replacingOccurrences(of: "_", with: "-").lowercased()
+    let exact = catalog.filter { $0.language.lowercased() == normal }
+    if !exact.isEmpty { return exact }
+    let family = normal.split(separator: "-").first.map(String.init) ?? normal
+    return catalog.filter { $0.language.lowercased().split(separator: "-").first.map(String.init) == family }
+}
+
+private struct ResolvedVoice {
+    enum Engine {
+        case avSpeech(AVSpeechSynthesisVoice)
+        /// nil means no `-v`: whatever the System Voice is. That is the one
+        /// route to a Siri voice, because Apple does not offer them to apps.
+        case say(String?)
+    }
+
+    let engine: Engine
+    let summary: [String: Any]
+
+    init(_ voice: SpeechVoice) {
+        engine = voice.avVoice.map { .avSpeech($0) } ?? .say(voice.name)
+        summary = voice.summary
+    }
+
+    init(systemVoiceId id: String) {
+        let attributes = NSSpeechSynthesizer.attributes(forVoice: NSSpeechSynthesizer.VoiceName(rawValue: id))
+        engine = .say(nil)
+        summary = ["id": "system", "name": baseVoiceName(attributes[.name] as? String ?? id),
+                   "language": (attributes[.localeIdentifier] as? String ?? "").replacingOccurrences(of: "_", with: "-"),
+                   "engine": "say"]
+    }
+}
+
+private func resolveVoice(_ envelope: [String: Any]) throws -> ResolvedVoice {
+    let spec = (envelope["voice"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+    let language = (envelope["language"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    let catalog = voiceCatalog()
+
+    if spec.lowercased() == "system" { return ResolvedVoice(systemVoiceId: systemVoiceId()) }
+
+    if spec.isEmpty {
+        if let language {
+            guard let best = bestVoice(voices(in: catalog, speaking: language), language: language) else {
+                throw SpeechFailure.unsupported(
+                    "No voice speaks \"\(language)\". Run `apple-llm voices --all` to see what is installed.")
+            }
+            return ResolvedVoice(best)
+        }
+        let systemId = systemVoiceId()
+        let matchId = AVSpeechSynthesisVoice(identifier: systemId)?.identifier ?? systemId
+        if let listed = catalog.first(where: { $0.id == matchId }) { return ResolvedVoice(listed) }
+        return ResolvedVoice(systemVoiceId: systemId)
+    }
+
+    if let byId = catalog.first(where: { $0.id == spec }) { return ResolvedVoice(byId) }
+    let needle = spec.lowercased()
+    var named = catalog.filter { $0.name.lowercased() == needle || $0.fullName.lowercased() == needle }
+    if let language, !named.isEmpty {
+        named = voices(in: named, speaking: language)
+    } else if named.count > 1, let current = Locale.current.language.languageCode?.identifier {
+        // "Eddy" exists in fifteen languages; the speaker's own comes first.
+        let own = voices(in: named, speaking: current)
+        if !own.isEmpty { named = own }
+    }
+    if let best = bestVoice(named, language: language ?? Locale.current.language.languageCode?.identifier) {
+        return ResolvedVoice(best)
+    }
+    let close = Set(catalog.map(\.name).filter {
+        $0.lowercased().hasPrefix(String(needle.prefix(2))) || needle.hasPrefix($0.lowercased().prefix(3))
+    }).sorted().prefix(5)
+    let hint = close.isEmpty ? "" : " Did you mean \(close.joined(separator: ", "))?"
+    throw SpeechFailure.unsupported(
+        "Unknown voice \"\(spec)\".\(hint) Run `apple-llm voices --all` to list every voice.")
+}
+
+// MARK: Text to speech
+
+/// How far `AVSpeechUtterance.rate` is from a speed multiplier. The rate is not
+/// linear and 0.5 is normal, so "twice as fast" is not a number a person can
+/// guess. Measured on macOS 27 against a 49 second passage: rate 0 gives 88.5s,
+/// rate 1 gives 12.2s.
+private let avRateForSpeed: [(speed: Double, value: Double)] = [
+    (0.56, 0), (0.67, 0.1), (0.72, 0.2), (0.83, 0.3), (0.91, 0.4), (1, 0.5),
+    (1.29, 0.55), (1.59, 0.6), (2.11, 0.7), (2.80, 0.8), (3.52, 0.9), (4.04, 1),
+]
+
+/// The same for `say -r`, in words per minute, on the same passage.
+private let sayRateForSpeed: [(speed: Double, value: Double)] = [
+    (0.83, 90), (1, 175), (1.12, 200), (1.83, 350), (2.49, 500), (3.52, 700), (4.04, 800),
+]
+
+/// Linear between measured points, clamped at both ends.
+private func interpolate(_ table: [(speed: Double, value: Double)], at speed: Double) -> Double {
+    guard let first = table.first, let last = table.last else { return speed }
+    if speed <= first.speed { return first.value }
+    if speed >= last.speed { return last.value }
+    for (low, high) in zip(table, table.dropFirst()) where speed <= high.speed {
+        return low.value + (speed - low.speed) / (high.speed - low.speed) * (high.value - low.value)
+    }
+    return last.value
+}
+
+private struct SpeechSettings {
+    let text: String
+    let ssml: Bool
+    let speed: Double?
+    let pitch: Double?
+    let volume: Double?
+    let wantWords: Bool
+
+    init(_ envelope: [String: Any]) throws {
+        text = envelope["text"] as? String ?? ""
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SpeechFailure.unsupported("There is no text to speak.")
+        }
+        ssml = envelope["ssml"] as? Bool ?? false
+        speed = num(envelope["speed"])
+        pitch = num(envelope["pitch"])
+        volume = num(envelope["volume"])
+        wantWords = envelope["words"] as? Bool ?? false
+        if let speed, !(0.25...4).contains(speed) {
+            throw SpeechFailure.unsupported("speed must be between 0.25 and 4 (got \(speed)).")
+        }
+        if let pitch, !(0.5...2).contains(pitch) {
+            throw SpeechFailure.unsupported("pitch must be between 0.5 and 2 (got \(pitch)).")
+        }
+        if let volume, !(0...1).contains(volume) {
+            throw SpeechFailure.unsupported("volume must be between 0 and 1 (got \(volume)).")
+        }
+    }
+
+    /// `say` has no pitch, volume or SSML. Refused rather than ignored: a caller
+    /// who asked for quiet audio and got loud audio has been misled.
+    func assertSayCanDoThis(voiceName: String) throws {
+        var missing: [String] = []
+        if pitch != nil { missing.append("pitch") }
+        if volume != nil { missing.append("volume") }
+        if ssml { missing.append("SSML") }
+        if !missing.isEmpty {
+            throw SpeechFailure.unsupported(
+                "The voice \"\(voiceName)\" is only reachable through macOS `say`, which has no "
+                + "\(missing.joined(separator: " or ")). Pick a voice whose engine is avspeech.")
+        }
+    }
+
+    func utterance(voice: AVSpeechSynthesisVoice) throws -> AVSpeechUtterance {
+        let made: AVSpeechUtterance
+        if ssml {
+            guard let parsed = AVSpeechUtterance(ssmlRepresentation: text) else {
+                throw SpeechFailure.unsupported("The text is not valid SSML.")
+            }
+            made = parsed
+        } else {
+            made = AVSpeechUtterance(string: text)
+        }
+        made.voice = voice
+        if let speed { made.rate = Float(interpolate(avRateForSpeed, at: speed)) }
+        if let pitch { made.pitchMultiplier = Float(pitch) }
+        if let volume { made.volume = Float(volume) }
+        return made
+    }
+}
+
+/// One synthesizer for the life of the process: a new one costs about 300ms
+/// before its first buffer, a reused one about 10ms, which is the difference
+/// between a voice assistant that answers and one that hesitates. Requests are
+/// handled one at a time, so it is never shared between two at once.
+private let sharedSynthesizer: AVSpeechSynthesizer = {
+    let synthesizer = AVSpeechSynthesizer()
+    synthesizer.delegate = SynthesisRouter.shared
+    return synthesizer
+}()
+
+/// The shared synthesizer's only delegate, alive as long as the process.
+///
+/// A delegate per request crashed the helper: after a cancelled `speak`, the
+/// next request died with SIGSEGV in `objc_retain` under TextToSpeech, on a block
+/// the framework had queued on the main thread for an object already released.
+/// So nothing the framework may still be holding gets freed: this object never
+/// is, and the last few utterances are kept. Callbacks are matched by utterance,
+/// so a cancelled one's late didCancel cannot be taken for the next one finishing.
+private final class SynthesisRouter: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    static let shared = SynthesisRouter()
+
+    private let lock = NSLock()
+    private var current: AVSpeechUtterance?
+    private var recent: [AVSpeechUtterance] = []
+    private var onDone: ((_ cancelled: Bool) -> Void)?
+    private var onRange: ((NSRange) -> Void)?
+
+    func track(
+        _ utterance: AVSpeechUtterance, onDone: @escaping (_ cancelled: Bool) -> Void,
+        onRange: ((NSRange) -> Void)? = nil
+    ) {
+        lock.withLock {
+            current = utterance
+            recent.append(utterance)
+            if recent.count > 4 { recent.removeFirst() }
+            self.onDone = onDone
+            self.onRange = onRange
+        }
+    }
+
+    private func finished(_ utterance: AVSpeechUtterance, cancelled: Bool) {
+        let done = lock.withLock { () -> ((Bool) -> Void)? in
+            guard utterance === current else { return nil }
+            defer {
+                onDone = nil
+                onRange = nil
+            }
+            return onDone
+        }
+        done?(cancelled)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        finished(utterance, cancelled: false)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        finished(utterance, cancelled: true)
+    }
+
+    func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange,
+        utterance: AVSpeechUtterance
+    ) {
+        let handler = lock.withLock { utterance === current ? onRange : nil }
+        handler?(characterRange)
+    }
+}
+
+/// Stop the shared synthesizer and let its didCancel arrive before moving on.
+/// It may never come for a render, so waiting is bounded.
+private func stopSynthesizer(then finish: @escaping @Sendable () -> Void) {
+    sharedSynthesizer.stopSpeaking(at: .immediate)
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { finish() }
+}
+
+/// Speech that macOS cancelled when nobody asked it to.
+///
+/// Reporting this as success would be the worst outcome: if the helper's file is
+/// deleted while it runs, as a disk cleaner might do to a cache, AVSpeech fires
+/// didCancel within 0.1s and speaks nothing, and a render comes back cut short.
+/// Word callbacks cannot catch this, because some voices never send any.
+private let stoppedEarly = SpeechFailure.failed(
+    "macOS stopped this speech before it finished, and nothing here asked it to. "
+    + "If a disk cleaner removed apple-llm's cache while this program was running, restart it.")
+
+private final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool { lock.withLock { value } }
+
+    func set(_ cancelled: Bool) {
+        if cancelled { lock.withLock { value = true } }
+    }
+}
+
+/// Audio formats by name, and the file extension each is written with.
+private let audioExtensions: [String: String] = [
+    "wav": "wav", "aiff": "aiff", "caf": "caf", "m4a": "m4a", "aac": "aac", "flac": "flac", "pcm": "pcm",
+]
+
+/// Named in the error because these are what people ask for first.
+private let unencodable = "macOS can read MP3, Ogg and Opus but has no encoder for them. "
+    + "Use m4a, aac, flac or wav, and convert afterwards with ffmpeg if you need to."
+
+private func audioFormat(named name: String?, path: String) throws -> String {
+    let aliases = ["wave": "wav", "aif": "aiff", "mp4": "m4a", "raw": "pcm"]
+    let raw = (name?.isEmpty == false ? name! : (path as NSString).pathExtension).lowercased()
+    let format = aliases[raw] ?? raw
+    if ["mp3", "ogg", "oga", "opus"].contains(format) { throw SpeechFailure.unsupported(unencodable) }
+    guard audioExtensions[format] != nil else {
+        throw SpeechFailure.unsupported(
+            "Unknown audio format \"\(raw)\" (want wav, aiff, caf, m4a, aac, flac or pcm).")
+    }
+    return format
+}
+
+private func fileSettings(format: String, sampleRate rate: Double) -> [String: Any] {
+    var linear: [String: Any] = [
+        AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+        AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+    ]
+    switch format {
+    case "aiff":
+        linear[AVLinearPCMIsBigEndianKey] = true
+        return linear
+    case "m4a", "aac":
+        var aac: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1]
+        // Plenty for one voice; the encoder rejects this rate at very low sample rates.
+        if rate >= 16000 { aac[AVEncoderBitRateKey] = 48000 }
+        return aac
+    case "flac":
+        return [AVFormatIDKey: kAudioFormatFLAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+                AVEncoderBitDepthHintKey: 16]
+    default:
+        return linear
+    }
+}
+
+/// Writes audio buffers to a file, converting format and sample rate as needed.
+///
+/// Written beside the destination and renamed at the end, so a run that fails
+/// or is cancelled cannot leave half a file under the name the caller asked for.
+/// Takes buffers one at a time, so an hour of audio costs a buffer's worth of
+/// memory rather than an hour's.
+private final class AudioSink: @unchecked Sendable {
+    let format: String
+    private let destination: URL
+    private let temporary: URL
+    private let requestedRate: Double?
+    private let lock = NSLock()
+    private var file: AVAudioFile?
+    private var raw: FileHandle?
+    private var target: AVAudioFormat?
+    private var converter: AVAudioConverter?
+    private var closed = false
+
+    private(set) var failure: Error?
+    /// What arrived, in the source's own frames: word markers count in these.
+    private(set) var sourceFrames: Int64 = 0
+    private(set) var sourceRate: Double = 0
+    private(set) var sourceBytesPerFrame: Double = 0
+    /// What was written, in the output's own frames.
+    private(set) var outputFrames: Int64 = 0
+    private(set) var outputRate: Double = 0
+
+    init(destination: URL, format: String, sampleRate: Double?) {
+        self.destination = destination
+        self.format = format
+        requestedRate = sampleRate
+        temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".apple-llm-\(UUID().uuidString).\(audioExtensions[format] ?? format)")
+    }
+
+    func write(_ input: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed, failure == nil, input.frameLength > 0 else { return }
+        do {
+            if target == nil { try open(for: input.format) }
+            sourceFrames += Int64(input.frameLength)
+            guard let target else { return }
+            if input.format == target {
+                try store(input)
+            } else {
+                guard let output = try converted(input, to: target, endOfStream: false) else { return }
+                try store(output)
+            }
+        } catch {
+            failure = error
+        }
+    }
+
+    private func open(for source: AVAudioFormat) throws {
+        sourceRate = source.sampleRate
+        sourceBytesPerFrame = Double(source.streamDescription.pointee.mBytesPerFrame)
+        let rate = requestedRate ?? source.sampleRate
+        outputRate = rate
+        let made: AVAudioFormat?
+        if format == "pcm" {
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else {
+                throw SpeechFailure.failed("Could not write to \(destination.deletingLastPathComponent().path).")
+            }
+            raw = try FileHandle(forWritingTo: temporary)
+            made = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1, interleaved: true)
+        } else {
+            let opened = try AVAudioFile(
+                forWriting: temporary, settings: fileSettings(format: format, sampleRate: rate),
+                commonFormat: .pcmFormatFloat32, interleaved: false)
+            file = opened
+            made = opened.processingFormat
+        }
+        guard let made else { throw SpeechFailure.failed("Could not set up audio format \(format) at \(rate) Hz.") }
+        target = made
+        if source != made {
+            guard let conversion = AVAudioConverter(from: source, to: made) else {
+                throw SpeechFailure.failed("macOS cannot convert \(source) to \(made).")
+            }
+            converter = conversion
+        }
+    }
+
+    private func converted(
+        _ input: AVAudioPCMBuffer?, to target: AVAudioFormat, endOfStream: Bool
+    ) throws -> AVAudioPCMBuffer? {
+        guard let converter else { return nil }
+        let frames = Double(input?.frameLength ?? 4096)
+        let capacity = AVAudioFrameCount((frames * target.sampleRate / max(sourceRate, 1)).rounded(.up)) + 4096
+        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var supplied = false
+        var problem: NSError?
+        converter.convert(to: output, error: &problem) { _, status in
+            if supplied || input == nil {
+                status.pointee = endOfStream ? .endOfStream : .noDataNow
+                return nil
+            }
+            supplied = true
+            status.pointee = .haveData
+            return input
+        }
+        if let problem { throw problem }
+        return output.frameLength > 0 ? output : nil
+    }
+
+    private func store(_ buffer: AVAudioPCMBuffer) throws {
+        if let file {
+            try file.write(from: buffer)
+        } else if let raw, let samples = buffer.int16ChannelData {
+            try raw.write(contentsOf: Data(bytes: samples[0], count: Int(buffer.frameLength) * 2))
+        }
+        outputFrames += Int64(buffer.frameLength)
+    }
+
+    /// Flush, close and move into place. Returns the size in bytes.
+    func finish() throws -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        closed = true
+        if let failure { throw failure }
+        guard outputFrames > 0 || sourceFrames > 0 else { throw SpeechFailure.failed("No audio came back.") }
+        if let target, converter != nil {
+            while let tail = try converted(nil, to: target, endOfStream: true) { try store(tail) }
+        }
+        file?.close()
+        file = nil
+        try raw?.close()
+        raw = nil
+        guard rename(temporary.path, destination.path) == 0 else {
+            throw SpeechFailure.failed("Could not write \(destination.path): \(String(cString: strerror(errno))).")
+        }
+        let size = try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int
+        return size ?? 0
+    }
+
+    func abandon() {
+        lock.lock()
+        defer { lock.unlock() }
+        closed = true
+        file?.close()
+        file = nil
+        try? raw?.close()
+        raw = nil
+        try? FileManager.default.removeItem(at: temporary)
+    }
+}
+
+/// Word positions from a render, turned into seconds at the end.
+///
+/// A marker's `byteSampleOffset` counts from the start of the current *segment*,
+/// not the utterance: AVSpeech ends a segment with a zero-length buffer, several
+/// times in a long text. Taken at face value the last word of a 30 minute render
+/// reported 11.9s, so each marker is stored with the frames that preceded its
+/// segment.
+private final class WordMarks: @unchecked Sendable {
+    private let lock = NSLock()
+    private let text: NSString
+    private var segmentBase: Int64 = 0
+    private var marks: [(range: NSRange, base: Int64, offset: Int)] = []
+
+    init(text: String) {
+        self.text = text as NSString
+    }
+
+    func segmentEnded(framesSoFar: Int64) {
+        lock.withLock { segmentBase = framesSoFar }
+    }
+
+    func add(_ markers: [AVSpeechSynthesisMarker]) {
+        lock.withLock {
+            for marker in markers where marker.mark == .word {
+                marks.append((marker.textRange, segmentBase, Int(marker.byteSampleOffset)))
+            }
+        }
+    }
+
+    func words(sampleRate: Double, bytesPerFrame: Double, duration: Double) -> [[String: Any]] {
+        guard sampleRate > 0, bytesPerFrame > 0 else { return [] }
+        let starts = marks.map { (Double($0.base) + Double($0.offset) / bytesPerFrame) / sampleRate }
+        return marks.enumerated().map { index, mark in
+            let word: String
+            if NSMaxRange(mark.range) <= text.length {
+                word = text.substring(with: mark.range).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                word = ""
+            }
+            return [
+                "text": word, "start": rounded3(starts[index]),
+                "end": rounded3(index + 1 < starts.count ? starts[index + 1] : duration),
+                "offset": mark.range.location, "length": mark.range.length,
+            ]
+        }
+    }
+}
+
+private func renderWithAVSpeech(
+    _ settings: SpeechSettings, voice: AVSpeechSynthesisVoice, into sink: AudioSink
+) async throws -> WordMarks {
+    let utterance = try settings.utterance(voice: voice)
+    let synthesizer = sharedSynthesizer
+    let marks = WordMarks(text: utterance.speechString)
+    let canceller = Canceller()
+    let macOSCancelled = CancelFlag()
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = Once()
+            let finish: @Sendable () -> Void = { once.run { continuation.resume() } }
+            // A zero-length buffer ends a segment of the text, not the text: only
+            // this delegate call means the whole utterance is done.
+            SynthesisRouter.shared.track(utterance, onDone: { cancelled in
+                macOSCancelled.set(cancelled)
+                finish()
+            })
+            canceller.set { stopSynthesizer(then: finish) }
+            let onBuffer: AVSpeechSynthesizer.BufferCallback = { buffer in
+                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+                if pcm.frameLength == 0 {
+                    marks.segmentEnded(framesSoFar: sink.sourceFrames)
+                } else {
+                    sink.write(pcm)
+                }
+            }
+            if settings.wantWords {
+                synthesizer.write(utterance, toBufferCallback: onBuffer, toMarkerCallback: { marks.add($0) })
+            } else {
+                synthesizer.write(utterance, toBufferCallback: onBuffer)
+            }
+        }
+    } onCancel: {
+        canceller.cancel()
+    }
+    try Task.checkCancellation()
+    if macOSCancelled.isSet { throw stoppedEarly }
+    return marks
+}
+
+/// Run `/usr/bin/say`, reading the text from a file so nothing in it can be
+/// taken for an option, and so its length is no concern of argv.
+private func runSay(voice: String?, text: String, speed: Double?, output: URL?) async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("apple-llm-say-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let textFile = directory.appendingPathComponent("text.txt")
+    try text.write(to: textFile, atomically: false, encoding: .utf8)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    var arguments: [String] = []
+    if let voice { arguments += ["-v", voice] }
+    if let speed { arguments += ["-r", String(Int(interpolate(sayRateForSpeed, at: speed).rounded()))] }
+    if let output { arguments += ["-o", output.path] }
+    process.arguments = arguments + ["-f", textFile.path]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    let errors = Pipe()
+    process.standardError = errors
+
+    let canceller = Canceller()
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { finished in
+                if finished.terminationReason == .exit, finished.terminationStatus == 0 {
+                    continuation.resume()
+                    return
+                }
+                if finished.terminationReason == .uncaughtSignal {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                let detail = String(data: errors.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+                continuation.resume(throwing: SpeechFailure.failed(
+                    "macOS `say` failed (exit \(finished.terminationStatus)): \(detail.trimmingCharacters(in: .whitespacesAndNewlines))"))
+            }
+            do {
+                try process.run()
+                canceller.set { if process.isRunning { process.terminate() } }
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(throwing: SpeechFailure.failed("Could not run /usr/bin/say: \(error.localizedDescription)"))
+            }
+        }
+    } onCancel: {
+        canceller.cancel()
+    }
+}
+
+/// Have `say` render to a file, then feed that through the sink, which gives
+/// these voices every output format the AVSpeech route has.
+///
+/// A render is only kept once two in a row agree, because `say` can exit 0 having
+/// written something wrong. With no load every voice was deterministic: 15 renders
+/// in 15 came out the same length. With the language model busy in other processes,
+/// a quarter of renders in Aman and Tara lost words ("The quick over, it was a
+/// bright cold day in April"), and a few were silent or 0.02s long. Bad renders
+/// vary, so two agreeing means both are good. AVSpeech has none of this: 4,130
+/// renders under the same load came out identical.
+///
+/// Some macOS versions are also reported to write silence for Siri voices every
+/// time. That still ends in an error: a silent file with no error is the worst way
+/// to find out.
+private func renderWithSay(
+    _ settings: SpeechSettings, voice: String?, into sink: AudioSink
+) async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("apple-llm-render-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let rendered = directory.appendingPathComponent("speech.aiff")
+
+    var previousFrames: Int64?
+    var sawSound = false
+    for attempt in 1...6 {
+        if attempt > 1 { try await Task.sleep(nanoseconds: 100_000_000) }
+        try await runSay(voice: voice, text: settings.text, speed: settings.speed, output: rendered)
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: rendered)
+        } catch {
+            throw SpeechFailure.failed("macOS `say` produced no audio for this voice.")
+        }
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 65536) else {
+            throw SpeechFailure.failed("Could not read the audio `say` produced.")
+        }
+        var peak: Float = 0
+        while file.framePosition < file.length {
+            try Task.checkCancellation()
+            try file.read(into: buffer)
+            if buffer.frameLength == 0 { break }
+            if let samples = buffer.floatChannelData {
+                for index in 0..<Int(buffer.frameLength) { peak = max(peak, abs(samples[0][index])) }
+            }
+        }
+        guard peak >= 0.0005 else {
+            previousFrames = nil
+            continue
+        }
+        sawSound = true
+        // Ona alone was once 10ms out with nothing else running, so not exact.
+        if let previousFrames, abs(previousFrames - file.length) <= max(previousFrames / 200, 512) {
+            file.framePosition = 0
+            while file.framePosition < file.length {
+                try Task.checkCancellation()
+                try file.read(into: buffer)
+                if buffer.frameLength == 0 { break }
+                sink.write(buffer)
+            }
+            return
+        }
+        previousFrames = file.length
+    }
+    if sawSound {
+        throw SpeechFailure.failed(
+            "macOS `say` could not render this voice cleanly while the Mac was this busy. "
+            + "Try again, or pick a voice whose engine is avspeech.")
+    }
+    throw SpeechFailure.failed(
+        "This voice rendered silence to a file, which some macOS versions do for Siri voices. "
+        + "It can still speak aloud; to get a file, pick another voice.")
+}
+
+@available(macOS 26.0, *)
+private func synthesizeToFile(_ envelope: [String: Any]) async throws -> [String: Any] {
+    let settings = try SpeechSettings(envelope)
+    guard let out = envelope["out"] as? String, !out.isEmpty else {
+        throw SpeechFailure.unsupported("synthesize needs an output path.")
+    }
+    let format = try audioFormat(named: envelope["format"] as? String, path: out)
+    let rate = num(envelope["sampleRate"])
+    if let rate, !(8000...192000).contains(rate) {
+        throw SpeechFailure.unsupported("sampleRate must be between 8000 and 192000 (got \(rate)).")
+    }
+    let voice = try resolveVoice(envelope)
+    let destination = URL(fileURLWithPath: out)
+    var isDirectory: ObjCBool = false
+    let parent = destination.deletingLastPathComponent().path
+    guard FileManager.default.fileExists(atPath: parent, isDirectory: &isDirectory), isDirectory.boolValue else {
+        throw SpeechFailure.unsupported("The folder \(parent) does not exist.")
+    }
+
+    let sink = AudioSink(destination: destination, format: format, sampleRate: rate)
+    do {
+        var marks: WordMarks?
+        switch voice.engine {
+        case .avSpeech(let chosen):
+            marks = try await renderWithAVSpeech(settings, voice: chosen, into: sink)
+        case .say(let name):
+            try settings.assertSayCanDoThis(voiceName: name ?? "system")
+            try await renderWithSay(settings, voice: name, into: sink)
+        }
+        try Task.checkCancellation()
+        if let failure = sink.failure { throw failure }
+        guard sink.sourceFrames > 0 else {
+            throw SpeechFailure.failed(
+                "No audio came back from this voice. Try another, or voice \"system\" to go through macOS `say`.")
+        }
+        let bytes = try sink.finish()
+        let duration = sink.outputRate > 0 ? Double(sink.outputFrames) / sink.outputRate : 0
+        var payload: [String: Any] = [
+            "ok": true, "path": destination.path, "format": format, "duration": rounded3(duration),
+            "sampleRate": sink.outputRate, "bytes": bytes, "voice": voice.summary,
+        ]
+        if settings.wantWords, let marks {
+            payload["words"] = marks.words(
+                sampleRate: sink.sourceRate, bytesPerFrame: sink.sourceBytesPerFrame, duration: duration)
+        }
+        return payload
+    } catch {
+        sink.abandon()
+        throw error
+    }
+}
+
+@available(macOS 26.0, *)
+private func speakAloud(_ envelope: [String: Any]) async throws -> [String: Any] {
+    let settings = try SpeechSettings(envelope)
+    let voice = try resolveVoice(envelope)
+    let started = Date()
+    switch voice.engine {
+    case .say(let name):
+        try settings.assertSayCanDoThis(voiceName: name ?? "system")
+        try await runSay(voice: name, text: settings.text, speed: settings.speed, output: nil)
+    case .avSpeech(let chosen):
+        let utterance = try settings.utterance(voice: chosen)
+        let spoken = utterance.speechString as NSString
+        let onRange: ((NSRange) -> Void)? = !settings.wantWords ? nil : { range in
+            guard NSMaxRange(range) <= spoken.length else { return }
+            emit(["ok": true, "done": false, "word": [
+                "text": spoken.substring(with: range), "start": rounded3(Date().timeIntervalSince(started)),
+                "offset": range.location, "length": range.length,
+            ] as [String: Any]])
+        }
+        let canceller = Canceller()
+        let macOSCancelled = CancelFlag()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let once = Once()
+                let finish: @Sendable () -> Void = { once.run { continuation.resume() } }
+                SynthesisRouter.shared.track(utterance, onDone: { cancelled in
+                    macOSCancelled.set(cancelled)
+                    finish()
+                }, onRange: onRange)
+                canceller.set { stopSynthesizer(then: finish) }
+                sharedSynthesizer.speak(utterance)
+            }
+        } onCancel: {
+            canceller.cancel()
+        }
+        try Task.checkCancellation()
+        if macOSCancelled.isSet { throw stoppedEarly }
+    }
+    try Task.checkCancellation()
+    return ["ok": true, "spoken": true, "duration": rounded3(Date().timeIntervalSince(started)),
+            "voice": voice.summary]
+}
+
+// MARK: Speech to text
+
+/// `text` and `alternatives` live on each transcriber's own Result type rather
+/// than on the protocol they share.
+@available(macOS 26.0, *)
+private protocol SpeechTextResult: SpeechModuleResult {
+    var text: AttributedString { get }
+    var alternatives: [AttributedString] { get }
+}
+
+@available(macOS 26.0, *)
+extension SpeechTranscriber.Result: SpeechTextResult {}
+
+@available(macOS 26.0, *)
+extension DictationTranscriber.Result: SpeechTextResult {}
+
+/// One recognised phrase, either transcriber's, flattened for the wire.
+private struct RecognizedPiece: @unchecked Sendable {
+    let text: String
+    let isFinal: Bool
+    let start: Double
+    let end: Double
+    let confidence: Double?
+    let words: [[String: Any]]
+    let alternatives: [String]
+
+    func json(includeWords: Bool) -> [String: Any] {
+        var out: [String: Any] = [
+            "text": text.trimmingCharacters(in: .whitespacesAndNewlines), "start": start, "end": end,
+        ]
+        if let confidence { out["confidence"] = confidence }
+        if includeWords, !words.isEmpty { out["words"] = words }
+        if !alternatives.isEmpty { out["alternatives"] = alternatives }
+        return out
+    }
+}
+
+@available(macOS 26.0, *)
+private func recognizedPiece<R: SpeechTextResult>(_ result: R) -> RecognizedPiece {
+    var words: [[String: Any]] = []
+    var confidences: [Double] = []
+    for run in result.text.runs {
+        let chunk = String(result.text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let confidence = run.transcriptionConfidence { confidences.append(confidence) }
+        if chunk.isEmpty { continue }
+        if let range = run.audioTimeRange {
+            var word: [String: Any] = ["text": chunk, "start": seconds(range.start), "end": seconds(range.end)]
+            if let confidence = run.transcriptionConfidence { word["confidence"] = rounded3(confidence) }
+            words.append(word)
+        } else if var last = words.popLast() {
+            // Punctuation can arrive untimed; it belongs to the word before it.
+            last["text"] = (last["text"] as? String ?? "") + chunk
+            words.append(last)
+        }
+    }
+    let alternatives = result.alternatives.dropFirst().map { String($0.characters) }
+    return RecognizedPiece(
+        text: String(result.text.characters), isFinal: result.isFinal,
+        start: seconds(result.range.start), end: seconds(result.range.end),
+        confidence: confidences.isEmpty ? nil : rounded3(confidences.reduce(0, +) / Double(confidences.count)),
+        words: words, alternatives: Array(alternatives))
+}
+
+@available(macOS 26.0, *)
+private func recognizedStream<M: SpeechModule>(_ module: M) -> AsyncThrowingStream<RecognizedPiece, Error>
+where M.Result: SpeechTextResult {
+    AsyncThrowingStream { continuation in
+        let task = Task {
+            do {
+                for try await result in module.results { continuation.yield(recognizedPiece(result)) }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { _ in task.cancel() }
+    }
+}
+
+/// Which language to recognise, and with which of Apple's two transcribers.
+///
+/// `SpeechTranscriber` is the better one and is preferred, but `DictationTranscriber`
+/// covers languages it lacks — Russian, Polish, Dutch, Turkish and Arabic among
+/// them — so between them macOS 27 reaches far more than either alone.
+private struct RecognitionTarget {
+    let locale: Locale
+    let useDictation: Bool
+    var id: String { locale.identifier(.bcp47) }
+    var engine: String { useDictation ? "dictation" : "transcriber" }
+}
+
+@available(macOS 26.0, *)
+private func recognitionTarget(_ spec: String?) async throws -> RecognitionTarget {
+    let transcriberOK = SpeechTranscriber.isAvailable
+    let main = transcriberOK ? await SpeechTranscriber.supportedLocales : []
+    let dictation = await DictationTranscriber.supportedLocales
+
+    func exact(_ wanted: Locale) async -> RecognitionTarget? {
+        if transcriberOK, let found = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) {
+            return RecognitionTarget(locale: found, useDictation: false)
+        }
+        if let found = await DictationTranscriber.supportedLocale(equivalentTo: wanted) {
+            return RecognitionTarget(locale: found, useDictation: true)
+        }
+        return nil
+    }
+    /// "hi" has no equivalent on its own: find its region, the speaker's first.
+    func family(_ language: String) -> RecognitionTarget? {
+        let code = language.split(separator: "-").first.map { $0.lowercased() } ?? language.lowercased()
+        let likely = Locale.Language(identifier: language).maximalIdentifier.split(separator: "-").last.map(String.init)
+        let order = [Locale.current.region?.identifier, likely].compactMap { $0 }
+        for (list, useDictation) in [(main, false), (dictation, true)] {
+            let matches = list.filter { $0.language.languageCode?.identifier.lowercased() == code }
+            guard !matches.isEmpty else { continue }
+            let preferred = order.compactMap { region in matches.first { $0.region?.identifier == region } }.first
+            return RecognitionTarget(locale: preferred ?? matches[0], useDictation: useDictation)
+        }
+        return nil
+    }
+
+    if let spec, !spec.isEmpty {
+        let normal = spec.replacingOccurrences(of: "_", with: "-")
+        if let found = await exact(Locale(identifier: normal)), found.id.lowercased() == normal.lowercased() {
+            return found
+        }
+        if let found = family(normal) { return found }
+        throw SpeechFailure.unsupported(
+            "macOS cannot recognise \"\(spec)\". Run `apple-llm languages` to see what it can.")
+    }
+    if let found = await exact(Locale.current) { return found }
+    if let code = Locale.current.language.languageCode?.identifier, let found = family(code) { return found }
+    if let found = await exact(Locale(identifier: "en-US")) { return found }
+    throw SpeechFailure.unsupported("Speech recognition is not available on this Mac.")
+}
+
+@available(macOS 26.0, *)
+private func installedLanguages() async -> (main: Set<String>, dictation: Set<String>) {
+    let main = await SpeechTranscriber.installedLocales.map { $0.identifier(.bcp47) }
+    let dictation = await DictationTranscriber.installedLocales.map { $0.identifier(.bcp47) }
+    return (Set(main), Set(dictation))
+}
+
+/// Download a language's model if it is missing.
+///
+/// The check is `installedLocales`, not `AssetInventory.status`: that reported
+/// `.supported` for an installed en-US model that worked. Without a model the
+/// framework fails with "Audio format is not supported", which sends you looking
+/// in entirely the wrong place, so this runs before any audio is touched.
+@available(macOS 26.0, *)
+private func ensureInstalled(
+    _ target: RecognitionTarget, module: any SpeechModule, allowDownload: Bool
+) async throws {
+    let installed = await installedLanguages()
+    if (target.useDictation ? installed.dictation : installed.main).contains(target.id) { return }
+    guard allowDownload else {
+        throw SpeechFailure.notInstalled(
+            language: target.id,
+            message: "The speech model for \(target.id) is not installed. "
+                + "Run `apple-llm languages install \(target.id)`, or allow the download.")
+    }
+    let request: AssetInstallationRequest?
+    do {
+        request = try await AssetInventory.assetInstallationRequest(supporting: [module])
+    } catch let error as SFSpeechError where error.code == .tooManyAssetLocalesAllocated {
+        // An app may reserve only a few languages; make room rather than fail.
+        for locale in await AssetInventory.reservedLocales where locale.identifier(.bcp47) != target.id {
+            if await AssetInventory.release(reservedLocale: locale) { break }
+        }
+        request = try await AssetInventory.assetInstallationRequest(supporting: [module])
+    }
+    guard let request else { return }
+    let reporter = Task {
+        var last = -1.0
+        while !Task.isCancelled {
+            let fraction = request.progress.fractionCompleted
+            if fraction != last {
+                emit(["ok": true, "done": false, "download": ["language": target.id, "fraction": fraction] as [String: Any]])
+                last = fraction
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+    defer { reporter.cancel() }
+    try await withTaskCancellationHandler {
+        try await request.downloadAndInstall()
+    } onCancel: {
+        request.progress.cancel()
+    }
+}
+
+/// The transcriber module and its results, whichever transcriber it is.
+@available(macOS 26.0, *)
+private func makeRecognizer(
+    _ target: RecognitionTarget, live: Bool, alternatives: Bool
+) -> (module: any SpeechModule, pieces: AsyncThrowingStream<RecognizedPiece, Error>) {
+    if target.useDictation {
+        var reporting: Set<DictationTranscriber.ReportingOption> = []
+        if live { reporting.formUnion([.volatileResults, .frequentFinalization]) }
+        if alternatives { reporting.insert(.alternativeTranscriptions) }
+        let module = DictationTranscriber(
+            locale: target.locale, contentHints: [], transcriptionOptions: [.punctuation],
+            reportingOptions: reporting, attributeOptions: [.audioTimeRange, .transcriptionConfidence])
+        return (module, recognizedStream(module))
+    }
+    var reporting: Set<SpeechTranscriber.ReportingOption> = []
+    if live { reporting.formUnion([.volatileResults, .fastResults]) }
+    if alternatives { reporting.insert(.alternativeTranscriptions) }
+    let module = SpeechTranscriber(
+        locale: target.locale, transcriptionOptions: [], reportingOptions: reporting,
+        attributeOptions: [.audioTimeRange, .transcriptionConfidence])
+    return (module, recognizedStream(module))
+}
+
+@available(macOS 26.0, *)
+private func makeAnalyzer(modules: [any SpeechModule], hints: [String]) async throws -> SpeechAnalyzer {
+    // Lingering keeps the model loaded between requests on this long-lived helper.
+    let analyzer = SpeechAnalyzer(
+        modules: modules, options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .lingering))
+    if !hints.isEmpty {
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = hints
+        try await analyzer.setContext(context)
+    }
+    return analyzer
+}
+
+/// The final payload, shared by file and microphone.
+private func recognitionPayload(
+    _ pieces: [RecognizedPiece], target: RecognitionTarget, duration: Double, includeWords: Bool
+) -> [String: Any] {
+    [
+        "ok": true,
+        "text": pieces.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines),
+        "segments": pieces.map { $0.json(includeWords: includeWords) },
+        "language": target.id, "engine": target.engine, "duration": rounded3(duration),
+    ]
+}
+
+@available(macOS 26.0, *)
+private func transcribeFile(_ envelope: [String: Any]) async throws -> [String: Any] {
+    guard let path = envelope["path"] as? String, !path.isEmpty else {
+        throw SpeechFailure.unsupported("transcribe needs a file path.")
+    }
+    guard FileManager.default.fileExists(atPath: path) else {
+        throw SpeechFailure.unsupported("Audio file not found: \(path)")
+    }
+    let file: AVAudioFile
+    do {
+        file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+    } catch {
+        throw SpeechFailure.unsupported(
+            "macOS could not read audio from \(path). It reads WAV, AIFF, CAF, MP3, M4A, AAC, FLAC and MP4 or MOV "
+            + "video, but not WebM, Ogg or MKV; convert those with ffmpeg first.")
+    }
+    let duration = Double(file.length) / max(file.fileFormat.sampleRate, 1)
+    let target = try await recognitionTarget(envelope["language"] as? String)
+    let includeWords = envelope["words"] as? Bool ?? false
+    let hints = stringArray(envelope["hints"])
+    let (module, pieces) = makeRecognizer(
+        target, live: false, alternatives: envelope["alternatives"] as? Bool ?? false)
+    try await ensureInstalled(target, module: module, allowDownload: envelope["download"] as? Bool ?? true)
+
+    emit(["ok": true, "done": false, "started": [
+        "language": target.id, "engine": target.engine, "duration": rounded3(duration),
+    ] as [String: Any]])
+    let collector = Task { () throws -> [RecognizedPiece] in
+        var finals: [RecognizedPiece] = []
+        for try await piece in pieces {
+            finals.append(piece)
+            emit(["ok": true, "done": false, "segment": piece.json(includeWords: includeWords)])
+        }
+        return finals
+    }
+    let analyzer = try await makeAnalyzer(modules: [module], hints: hints)
+    let canceller = Canceller()
+    canceller.set { Task { await analyzer.cancelAndFinishNow() } }
+    do {
+        try await withTaskCancellationHandler {
+            if let last = try await analyzer.analyzeSequence(from: file) {
+                try await analyzer.finalizeAndFinish(through: last)
+            } else {
+                await analyzer.cancelAndFinishNow()
+            }
+        } onCancel: {
+            canceller.cancel()
+        }
+        let finals = try await collector.value
+        try Task.checkCancellation()
+        return recognitionPayload(finals, target: target, duration: duration, includeWords: includeWords)
+    } catch {
+        collector.cancel()
+        try Task.checkCancellation()
+        throw error
+    }
+}
+
+/// What a running `listen` has heard, for deciding when it is over.
+private final class ListenState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastChange = Date()
+    private var heard = false
+    private var latest = ""
+
+    func saw(_ text: String) {
+        lock.withLock {
+            guard text != latest else { return }
+            latest = text
+            lastChange = Date()
+            if !text.isEmpty { heard = true }
+        }
+    }
+
+    func quietFor(atLeast silence: Double) -> Bool {
+        lock.withLock { heard && Date().timeIntervalSince(lastChange) >= silence }
+    }
+}
+
+@available(macOS 26.0, *)
+private func requireMicrophone() async throws {
+    let fix = "Allow your terminal app under System Settings › Privacy & Security › Microphone, then try again."
+    switch AVCaptureDevice.authorizationStatus(for: .audio) {
+    case .authorized:
+        return
+    case .notDetermined:
+        // Answered by whichever app launched this helper: Terminal, VS Code.
+        if await AVCaptureDevice.requestAccess(for: .audio) { return }
+        throw SpeechFailure.permission("Microphone access was refused. \(fix)")
+    default:
+        throw SpeechFailure.permission("This process is not allowed to use the microphone. \(fix)")
+    }
+}
+
+@available(macOS 26.0, *)
+private func listenToMicrophone(_ envelope: [String: Any]) async throws -> [String: Any] {
+    let silence = num(envelope["silence"]).flatMap { $0 > 0 ? $0 : nil }
+    let maxSeconds = num(envelope["maxSeconds"]).flatMap { $0 > 0 ? $0 : nil }
+    let includeWords = envelope["words"] as? Bool ?? false
+    let target = try await recognitionTarget(envelope["language"] as? String)
+    let (module, pieces) = makeRecognizer(target, live: true, alternatives: false)
+    try await ensureInstalled(target, module: module, allowDownload: envelope["download"] as? Bool ?? true)
+    try await requireMicrophone()
+
+    let engine = AVAudioEngine()
+    let input = engine.inputNode
+    let micFormat = input.outputFormat(forBus: 0)
+    guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
+        throw SpeechFailure.unsupported("No microphone is available.")
+    }
+    let wanted = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module], considering: micFormat)
+        ?? micFormat
+    guard let converter = AVAudioConverter(from: micFormat, to: wanted) else {
+        throw SpeechFailure.failed("macOS cannot convert the microphone's audio to what recognition needs.")
+    }
+
+    let (inputs, feed) = AsyncStream<AnalyzerInput>.makeStream()
+    input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * wanted.sampleRate / micFormat.sampleRate).rounded(.up)) + 16
+        guard let output = AVAudioPCMBuffer(pcmFormat: wanted, frameCapacity: capacity) else { return }
+        let once = Once()
+        var problem: NSError?
+        converter.convert(to: output, error: &problem) { _, status in
+            var given = false
+            once.run { given = true }
+            status.pointee = given ? .haveData : .noDataNow
+            return given ? buffer : nil
+        }
+        if problem == nil, output.frameLength > 0 { feed.yield(AnalyzerInput(buffer: output)) }
+    }
+
+    let state = ListenState()
+    let (stops, stopFeed) = AsyncStream<Void>.makeStream()
+    let stop: () -> Void = { _ = stopFeed.yield(()) }
+    Control.shared.onEndInput(stop)
+    defer { Control.shared.onEndInput(nil) }
+
+    let collector = Task { () throws -> [RecognizedPiece] in
+        var finals: [RecognizedPiece] = []
+        for try await piece in pieces {
+            let text = piece.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            state.saw(piece.isFinal ? "\(finals.count)|\(text)" : text)
+            var event = piece.json(includeWords: piece.isFinal && includeWords)
+            event["final"] = piece.isFinal
+            if piece.isFinal { finals.append(piece) }
+            emit(["ok": true, "done": false, "transcript": event])
+        }
+        return finals
+    }
+
+    let started = Date()
+    let analyzer = try await makeAnalyzer(modules: [module], hints: stringArray(envelope["hints"]))
+    do {
+        try await analyzer.start(inputSequence: inputs)
+        engine.prepare()
+        try engine.start()
+    } catch {
+        input.removeTap(onBus: 0)
+        feed.finish()
+        await analyzer.cancelAndFinishNow()
+        collector.cancel()
+        throw SpeechFailure.failed("Could not start the microphone: \(error.localizedDescription)")
+    }
+    emit(["ok": true, "done": false, "listening": true, "language": target.id])
+
+    let watcher = Task {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if let maxSeconds, Date().timeIntervalSince(started) >= maxSeconds { break }
+            if let silence, state.quietFor(atLeast: silence) { break }
+        }
+        if !Task.isCancelled { stop() }
+    }
+    let canceller = Canceller()
+    await withTaskCancellationHandler {
+        canceller.set(stop)
+        for await _ in stops { break }
+    } onCancel: {
+        canceller.cancel()
+    }
+    watcher.cancel()
+    engine.stop()
+    input.removeTap(onBus: 0)
+    feed.finish()
+    stopFeed.finish()
+
+    if Task.isCancelled {
+        await analyzer.cancelAndFinishNow()
+        collector.cancel()
+        throw CancellationError()
+    }
+    // The finish runs outside the request's task tree in spirit: stopping is what
+    // the caller asked for, and the words already heard are what they want back.
+    try await analyzer.finalizeAndFinishThroughEndOfInput()
+    let finals = try await collector.value
+    return recognitionPayload(
+        finals, target: target, duration: Date().timeIntervalSince(started), includeWords: includeWords)
+}
+
+@available(macOS 26.0, *)
+private func languagesPayload() async throws -> [String: Any] {
+    let main = SpeechTranscriber.isAvailable ? await SpeechTranscriber.supportedLocales : []
+    let dictation = await DictationTranscriber.supportedLocales
+    let installed = await installedLanguages()
+    var seen = Set<String>()
+    var languages: [[String: Any]] = []
+    for (list, useDictation) in [(main, false), (dictation, true)] {
+        for locale in list {
+            let id = locale.identifier(.bcp47)
+            guard seen.insert(id).inserted else { continue }
+            languages.append([
+                "id": id,
+                "name": Locale.current.localizedString(forIdentifier: id) ?? id,
+                "installed": (useDictation ? installed.dictation : installed.main).contains(id),
+                "engine": useDictation ? "dictation" : "transcriber",
+            ])
+        }
+    }
+    languages.sort { ($0["id"] as? String ?? "") < ($1["id"] as? String ?? "") }
+    let current = try? await recognitionTarget(nil)
+    return ["ok": true, "languages": languages, "default": current?.id ?? "en-US"]
+}
+
+@available(macOS 26.0, *)
+private func installLanguage(_ envelope: [String: Any]) async throws -> [String: Any] {
+    guard let language = envelope["language"] as? String, !language.isEmpty else {
+        throw SpeechFailure.unsupported("installSpeechLanguage needs a language.")
+    }
+    let target = try await recognitionTarget(language)
+    let (module, _) = makeRecognizer(target, live: false, alternatives: false)
+    try await ensureInstalled(target, module: module, allowDownload: true)
+    return ["ok": true, "language": target.id, "engine": target.engine]
+}
+
+/// Give a downloaded language back. macOS removes the files when it wants the
+/// space; this only says this helper no longer needs them.
+@available(macOS 26.0, *)
+private func removeLanguage(_ envelope: [String: Any]) async -> [String: Any] {
+    let language = (envelope["language"] as? String ?? "").replacingOccurrences(of: "_", with: "-").lowercased()
+    for locale in await AssetInventory.reservedLocales where locale.identifier(.bcp47).lowercased() == language {
+        return ["ok": true, "removed": await AssetInventory.release(reservedLocale: locale)]
+    }
+    return ["ok": true, "removed": false]
+}
+
 @main
 struct AppleLLMHelper {
     static func main() async {
@@ -1343,6 +2929,7 @@ struct AppleLLMHelper {
                 "functionTools": true,
                 "cancellation": true,
                 "builtInTools": ["ocr", "barcode", "spotlight"],
+                "speech": true,
             ]
             emit(payload)
             return
@@ -1357,6 +2944,10 @@ struct AppleLLMHelper {
         // reach a request that is still running; see Control. Requests are
         // still handled strictly one at a time, in order.
         if CommandLine.arguments.contains("--serve") {
+            // Ctrl-C reaches the whole foreground process group. The parent
+            // decides what it means: a `listen` that is stopped this way still
+            // has to finish, and hand back what it heard, in this process.
+            signal(SIGINT, SIG_IGN)
             let requests = AsyncStream<String> { continuation in
                 let reader = Thread {
                     while let line = readLine(strippingNewline: true) {
@@ -1365,6 +2956,10 @@ struct AppleLLMHelper {
                     }
                     Control.shared.stdinClosed()
                     continuation.finish()
+                    // Nobody is left to read a reply. A request that ignores
+                    // cancellation must not leave this process running on, and
+                    // ignoring SIGINT has removed the other way it would die.
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 5) { exit(0) }
                 }
                 reader.start()
             }

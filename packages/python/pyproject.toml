@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apple-llm"
-version = "0.2.0"
-description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
+version = "0.3.0"
+description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python, plus text to speech and speech to text in macOS's own voices and recognition. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 keywords = ["apple", "llm", "foundation-models", "on-device", "private-cloud-compute",
             "apple-intelligence", "macos", "local-llm", "structured-output",
             "apple-silicon", "local-ai", "on-device-ai", "offline", "no-api-key",
-            "openai-compatible", "json-schema", "pydantic", "siri"]
+            "openai-compatible", "json-schema", "pydantic", "siri", "cli", "macos-tahoe",
+            "text-to-speech", "tts", "speech-to-text", "stt", "speech-recognition",
+            "transcription", "dictation", "voice"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -27,6 +29,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 # No runtime dependencies. The wheel is pure Python and has no build step, so
 # installing on Linux or an Intel Mac always succeeds; probe() reports why the
@@ -55,8 +58,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The Swift helper ships as package data and is compiled on first use, never at
 # install time. It must stay byte-identical to swift/helper.swift at the repo
-# root; tests/test_drift.py asserts that.
-apple_llm = ["swift/*.swift"]
+# root; tests/test_drift.py asserts that. py.typed marks the package as typed
+# (PEP 561), so mypy and pyright read its annotations.
+apple_llm = ["swift/*.swift", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

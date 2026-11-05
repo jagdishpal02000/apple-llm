@@ -1,5 +1,6 @@
 /**
- * apple-llm — one library for Apple's on-device and Private Cloud Compute models.
+ * apple-llm — one library for Apple's on-device and Private Cloud Compute models,
+ * and for the text to speech and speech recognition built into macOS.
  *
  * macOS 26+ on Apple Silicon only. No API key, no account, no developer program.
  */
@@ -60,11 +61,56 @@ export {
   installCloudShortcut,
   shortcutDefinition,
   cloudSetupHint,
+  cloudJsonInstruction,
   CLOUD_SHORTCUT_NAME,
   CLOUD_SHORTCUT_NAME_WEB,
   CLOUD_CONTEXT_TOKENS,
 } from './cloud.js';
 export type { CloudProbe, CloudRequest } from './cloud.js';
+export {
+  AppleSpeech,
+  ListenSession,
+  installSpeechLanguage,
+  listSpeechLanguages,
+  listVoices,
+  listen,
+  probeSpeech,
+  removeSpeechLanguage,
+  speak,
+  synthesize,
+  systemVoice,
+  toSRT,
+  toVTT,
+  transcribe,
+  transcribeStream,
+} from './speech.js';
+export type {
+  AppleSpeechOptions,
+  AudioFormat,
+  AudioInput,
+  ListenEvent,
+  ListenOptions,
+  RecognitionOptions,
+  SavedSpeech,
+  SpeakOptions,
+  SpeakResult,
+  SpeechLanguage,
+  SpeechLanguages,
+  SpeechProbe,
+  SpokenWord,
+  SynthesizedSpeech,
+  SynthesizeOptions,
+  SystemVoice,
+  TranscribeOptions,
+  Transcript,
+  TranscriptSegment,
+  TranscriptWord,
+  Voice,
+  VoiceFilter,
+  VoiceInfo,
+  VoiceOptions,
+  VoiceQuality,
+} from './speech.js';
 export { toAppleSchema } from './schema.js';
 export type { JsonSchema } from './schema.js';
 export { parseLlmJson, stripCodeFences, extractJsonSpan } from './json-recovery.js';
@@ -85,5 +131,6 @@ export {
   ToolExecutionError,
   ModelBusyError,
   UnsupportedError,
+  PermissionDeniedError,
 } from './errors.js';
 export type { UnavailableReason, ErrorCode } from './errors.js';

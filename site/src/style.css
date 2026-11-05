@@ -485,6 +485,41 @@ h3 {
   gap: 14px 24px;
 }
 
+.elig {
+  margin: 18px 0 0;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+
+.elig code {
+  background: var(--bg-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  overflow-wrap: anywhere;
+}
+
+.elig a {
+  font-weight: 500;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+
+.badges a {
+  display: inline-flex;
+  line-height: 0;
+}
+
+.badges img {
+  height: 20px;
+  width: auto;
+}
+
 /* terminal */
 .term {
   margin: 0;
@@ -553,10 +588,54 @@ h3 {
   animation: blink 1.1s steps(1) infinite;
 }
 
+.t-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.t-edit {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--night-ink);
+  font: inherit;
+  line-height: inherit;
+  outline: none;
+  caret-color: var(--hl-key);
+}
+
+.t-edit:focus-visible {
+  outline: none;
+}
+
+.t-you {
+  color: var(--hl-fn);
+  font-weight: 600;
+}
+
+.term-body:focus-within .t-row {
+  background: rgba(212, 255, 58, 0.04);
+}
+
 .term figcaption {
-  font: 400 11.5px/1 var(--mono);
+  font: 400 11.5px/1.7 var(--mono);
   color: var(--night-ink-3);
   padding: 0 22px 16px;
+}
+
+.term figcaption code {
+  font-size: 1em;
+  color: var(--night-ink-2);
+}
+
+@media (pointer: coarse) {
+  .t-edit {
+    font-size: 16px;
+  }
 }
 
 .facts {
@@ -911,7 +990,7 @@ h3 {
 }
 
 .cloud-spec dd.warn {
-  color: var(--hl-num);
+  color: #ffd60a;
 }
 
 .cloud-code {
@@ -1155,6 +1234,10 @@ pre > code[data-lang] {
   border-color: transparent;
 }
 
+#speech .codebox {
+  margin-top: clamp(32px, 5vw, 56px);
+}
+
 .codebox-note {
   font-size: 14px;
   color: var(--night-ink-2);
@@ -1342,6 +1425,18 @@ pre > code[data-lang] {
   font-size: 12.5px;
 }
 
+.foot .fine a {
+  color: var(--ink-2);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--ink-3);
+}
+
+.foot .fine a:hover {
+  color: var(--ink);
+}
+
 /* ── responsive ─────────────────────────────────────────── */
 @media (max-width: 980px) {
   .hero-grid,
@@ -1371,7 +1466,7 @@ pre > code[data-lang] {
 }
 
 @media (max-width: 720px) {
-  .nav a:not(.nav-gh) {
+  .nav a:not(.nav-gh):not(.nav-keep) {
     display: none;
   }
 

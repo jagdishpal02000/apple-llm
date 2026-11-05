@@ -6,6 +6,10 @@ Intelligence, and Apple's large model on Private Cloud Compute. No API key, no
 account, no developer program membership, no Xcode — nothing to install beyond
 the package and Apple's Command Line Tools.
 
+**It also gives you the rest of what macOS has built in:** text to speech in every
+voice on your Mac, and speech to text for recordings of any length or live from the
+microphone. [Speech](#speech) needs no Apple Intelligence, and it runs on your Mac.
+
 [![npm](https://img.shields.io/npm/v/apple-llm?label=npm)](https://www.npmjs.com/package/apple-llm)
 [![npm downloads](https://img.shields.io/npm/dw/apple-llm)](https://www.npmjs.com/package/apple-llm)
 [![PyPI](https://img.shields.io/pypi/v/apple-llm)](https://pypi.org/project/apple-llm/)
@@ -40,11 +44,31 @@ with AppleLLM(tier="device") as llm:
     llm.json("Extract the fields", schema=Person)   # a pydantic model, validated back
 ```
 
-Or skip the SDK entirely: point any OpenAI client — the official SDKs,
-LangChain, Open WebUI, editor plugins — at the on-device model:
+Or skip the SDK entirely. From the shell:
 
 ```bash
-npx apple-llm serve   # OpenAI-compatible API at http://127.0.0.1:11436/v1, model "apple-on-device"
+npx apple-llm "What is the capital of Australia?"
+git diff | npx apple-llm "Write a commit message for this"   # piped text goes before the prompt
+```
+
+Or point any app at it. The server speaks both OpenAI's API — the official
+SDKs, LangChain, LlamaIndex, editor plugins — and **Ollama's**, which most Mac
+apps for local models use (Open WebUI, Enchanted, Msty, Page Assist, Continue,
+Zed, Obsidian plugins):
+
+```bash
+npx apple-llm serve                # OpenAI at http://127.0.0.1:11436/v1, model "apple-on-device"
+npx apple-llm serve --port 11434   # Ollama's port (with Ollama itself not running)
+ollama run apple-on-device "Hello" # even the Ollama CLI works against it
+```
+
+Or use your Mac's voices and ears:
+
+```bash
+npx apple-llm speak "Hello there"             # out loud, in your System voice
+npx apple-llm speak --file book.txt -o book.m4a   # any length: 30 minutes takes 18 seconds
+npx apple-llm transcribe meeting.mp4          # audio or video to text
+npx apple-llm listen                          # the microphone, live
 ```
 
 Both packages compile one small Swift helper on first use and share the compiled
@@ -74,6 +98,29 @@ it is reached through a private Shortcuts action that Apple can change or remove
 in any OS release, and it has no constrained decoding, so `json()` there is a
 request rather than a guarantee.
 
+**The cloud tier is rate-limited per Mac.** Apple's Private Cloud Compute stops
+answering a Mac that calls it too often: ten calls in about two minutes tripped
+it here, and it then refused every call for a few minutes — while `probe()` still
+reported the quota as `belowLimit`, because this is a separate, short-term
+limiter that nothing can read in advance. A refused call raises `QuotaError`
+(HTTP 429 from the server). Use the cloud for the calls that need it rather
+than for batch jobs, and pass `fallback: 'device'` to have the on-device model
+answer when the cloud says no.
+
+**Speech uses macOS's voices, on macOS's terms.** Apple's licence allows its
+system voices for your personal, non-commercial use, and rules out recording or
+publishing them in a commercial context. That covers every voice, not just Siri's,
+and it is the one thing to check before building on text to speech:
+[the licence on voices](#the-licence-on-voices).
+
+**What 0.3 adds.** [Text to speech and speech to text](#speech), in both packages
+and on the server. Fixes for the two ways the cloud tier failed — Apple's
+per-device rate limit surfaced as an opaque "Your request can't be completed
+right now", and cloud `json()` answered in prose — plus `fallback: 'device'`,
+an Ollama-compatible API on `apple-llm serve`, and a shell-friendly CLI
+(`apple-llm "question"`, piped input). Both packages; see the
+[CHANGELOG](packages/node/CHANGELOG.md).
+
 **What 0.2 adds (npm package).** Function tools executed in your process,
 Zod/Standard Schema structured output, `for await` streaming of text and of
 partial objects, message-list conversations with automatic trimming,
@@ -95,7 +142,7 @@ and keeps working unchanged; it does not expose these features yet.
 | JSON | **guaranteed** by constrained decoding | asked for in the prompt, recovered from prose |
 | Privacy | nothing leaves the machine | **your prompt leaves the machine** |
 | Setup | none | one-time `apple-llm setup-cloud` |
-| Limits | none | quota'd |
+| Limits | none | a per-Mac rate limit and a quota ([above](#read-this-before-you-use-it)) |
 | Vision | yes (macOS 27) | yes (macOS 27 Golden Gate), passed as a Shortcuts input |
 | Reasoning | **no** (the model says so) | yes |
 | Web search | no | optional `WFAllowWebSearch` — answers about last month's news, correctly |
@@ -105,6 +152,214 @@ and keeps working unchanged; it does not expose these features yet.
 
 `tier: 'auto'` uses the device when it is available, else the cloud when the
 shortcut is installed, else raises an error naming the setup step.
+
+## Speech
+
+The voices and speech recognition built into macOS, through the same helper.
+Neither touches the language model, so both work with **Apple Intelligence turned
+off**, and they cost no quota. Everything runs on your Mac; the only network use
+is downloading a recognition language the first time you use it.
+
+From the shell, no code needed:
+
+```bash
+apple-llm speak "Hello there"                          # out loud, in your System voice
+apple-llm speak hello there --voice Samantha           # any voice; no quotes needed
+apple-llm speak "Bonjour tout le monde" --language fr  # the best French voice on this Mac
+apple-llm speak --file notes.txt --speed 1.5           # read a file aloud, faster
+apple-llm speak "Welcome" -o welcome.m4a               # save it instead
+apple-llm voices                                       # the voices you have
+apple-llm transcribe meeting.mp4                       # audio or video to text
+apple-llm transcribe meeting.mp4 -o meeting.srt        # subtitles; the extension picks the format
+apple-llm listen                                       # the microphone, live; Ctrl-C stops and keeps it
+apple-llm languages                                    # what it can recognise
+```
+
+From code:
+
+```ts
+import { listen, speak, synthesize, transcribe } from 'apple-llm';
+
+await speak('Hello there', { voice: 'Samantha', speed: 1.2 });
+
+const { audio } = await synthesize('Hello there', { format: 'wav' });   // a Buffer
+await synthesize(longArticle, { voice: 'Samantha', out: 'article.m4a' }); // or a file
+
+const { text, segments } = await transcribe('meeting.m4a', { language: 'en-US' });
+
+const said = await listen();                                            // returns when you pause
+```
+
+```python
+from apple_llm import listen_once, speak, synthesize, transcribe
+
+speak("Hello there", voice="Samantha", speed=1.2)
+
+audio = synthesize("Hello there", format="wav").audio                   # bytes
+synthesize(long_article, voice="Samantha", out="article.m4a")           # or a file
+
+result = transcribe("meeting.m4a", language="en-US")                    # .text, .segments
+
+said = listen_once().text                                               # returns when you pause
+```
+
+### Voices
+
+`voice` takes a name (`Samantha`) or an id from `listVoices()` / `list_voices()`.
+An unknown one is an error that suggests close matches, unlike `say -v`, which
+exits 0 and quietly uses the default. With no `voice` you get your **System
+voice**; `language` picks the best voice for a language instead. To change the
+System voice or download better ones, which are free, search System Settings for
+"System voice".
+
+The Mac this was built on has 184 voices. Two engines reach them, chosen for you:
+
+| `engine` | Voices | Speed | Pitch, volume, SSML | Word timings |
+|---|---|---|---|---|
+| `avspeech` | almost all of them | yes | yes | all when rendering; live `onWord` events from most |
+| `say` | the few `AVSpeechSynthesizer` does not list, like Aman and Tara | yes | no, and asking is an error | no |
+
+`avspeech` is the sturdier of the two. `say` can lose words while Apple's language
+model is busy in another process. A file is rendered twice and kept only when the
+two agree, so it takes twice as long and is either right or an error, but speaking
+aloud cannot be checked that way.
+
+### Siri voices
+
+Apple does not let apps choose Siri voices. None appears in
+`AVSpeechSynthesizer`, `NSSpeechSynthesizer` or `say -v`, and asking for one by
+name got the default voice instead (macOS 27.2, checked by comparing the audio).
+
+The route that remains is the one Apple offers to people: where macOS lists a
+Siri voice under the System voice setting, choose it there, and `speak()` with
+no `voice` should use it, through `say`. Pass `voice: 'system'` to force that.
+Some macOS versions are reported to speak these voices aloud but render silence
+to a file; that raises an error here rather than handing you a silent file.
+**This path has not been tested with a Siri voice selected**, so reports are
+welcome. Note that the default voice may simply sound like Siri without being one.
+
+### Long audio
+
+There is no length limit to work around. Measured on an M4 MacBook Air, macOS 27.2:
+
+| | Audio | Took | |
+|---|---|---|---|
+| Render to a file | 30 minutes | 18 seconds | 11.3 MB as M4A, 80.4 MB as WAV, 50 MB of memory |
+| Render to a file | 60 minutes | 40 seconds | 22.5 MB as M4A, 62 MB of memory |
+| Read aloud | 30 minutes | 30 minutes | it speaks in real time |
+| Transcribe, with subtitles | 30 minutes | 28 seconds | 538 cues |
+
+For long text pass `out`, because without it the whole file is held in memory.
+
+### Speech to text
+
+`transcribe` takes a path or the bytes of a file: WAV, AIFF, CAF, MP3, M4A, AAC,
+FLAC, or MP4 and MOV video. WebM, Ogg and MKV need converting first, because macOS
+cannot read them.
+
+- **Name the language.** macOS does not detect it; the default is this Mac's
+  language. `en` and `en-US` both work. It recognises 68 languages on macOS 27: 45
+  through `SpeechTranscriber`, and 23 more, such as Russian, Polish, Dutch, Turkish
+  and Arabic, through `DictationTranscriber`. The result's `engine` says which ran.
+- **Missing languages download on first use**, in about 25 seconds, unless you
+  pass `download: false`, which raises `SetupRequiredError` instead. Hindi comes
+  back in Latin script (`namaste aaj mausam…`) on macOS 27.2.
+- **Timings.** `words: true` adds each word's timing and confidence, and `toSRT()`
+  / `toVTT()` use them to keep subtitle cues short enough to read.
+- **Hints** name terms it might miss: `hints: ['Kubernetes', 'Postgres']`.
+- **Accuracy.** A 3 to 4% word error rate here, on clean synthetic speech. Real
+  recordings will do worse, so try it on yours.
+
+### The microphone
+
+```ts
+const said = await listen({ silence: 1.5 });        // one utterance
+
+const session = listen({ continuous: true });       // until stop()
+for await (const event of session) console.log(event.text, event.final);
+session.stop();                                     // keeps what it heard; abort() discards it
+```
+
+```python
+with listen(continuous=True) as session:
+    for event in session:
+        print(event.text, event.final)              # session.stop() from another thread
+```
+
+A `final: false` event is a guess that the next one replaces. macOS asks once for
+microphone access, on behalf of whichever app launched this (Terminal, VS Code,
+your own app), and a refusal raises `PermissionDeniedError` naming the setting. It
+hears everything, including `speak()` through your speakers, so use headphones
+for a conversation. [examples/voice-assistant.ts](packages/node/examples/voice-assistant.ts)
+is a voice assistant in about twenty lines.
+
+### Audio formats
+
+| `format` | Extension | |
+|---|---|---|
+| `wav` | `.wav` | the default for bytes. macOS pads the header to 4 KB, so samples are not at byte 44 |
+| `m4a` | `.m4a` | small, plays everywhere |
+| `aac` | `.aac` | raw AAC, as browsers and streams like it |
+| `flac` | `.flac` | lossless |
+| `aiff`, `caf` | `.aiff`, `.caf` | |
+| `pcm` | `.pcm` | raw 16-bit little-endian mono samples: use this if you want the samples |
+
+`sampleRate` / `sample_rate` resamples, for example to the 16 kHz many speech tools
+want. **macOS cannot encode MP3, Ogg or Opus**, only read them, so asking for those
+is an error that says so.
+
+### On the OpenAI-compatible server
+
+`apple-llm serve` (npm) answers `POST /v1/audio/speech`,
+`POST /v1/audio/transcriptions` and `GET /v1/audio/voices`, so OpenAI clients can
+use it unchanged:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:11436/v1", api_key="unused")
+
+speech = client.audio.speech.create(model="tts-1", voice="Samantha", input="Hello there")
+speech.write_to_file("hello.aac")
+
+client.audio.transcriptions.create(model="whisper-1", file=open("hello.aac", "rb")).text
+```
+
+`model` is ignored. OpenAI's voice names (`alloy`, `nova`…) mean your System voice,
+because many clients cannot be told otherwise. Requests for `mp3` or `opus`, and
+requests naming no format, get AAC, with a `Content-Type` that says so: refusing
+would lock out every app that hardcodes MP3. `response_format` works for `wav`,
+`flac`, `aac`, `pcm` (24 kHz, as OpenAI defines it), and for transcripts `json`,
+`text`, `srt`, `vtt` and `verbose_json`, with `timestamp_granularities[]=word`.
+Uploads can be up to 512 MB.
+
+### The licence on voices
+
+This is about **Apple's voices rather than this package**. It applies to all of
+them, not just Siri's. Section F of the macOS licence ("Voices; Live Captions")
+lets you use them "while running the Apple Software" and "to create your own
+original content and projects for your personal, non-commercial use", then says:
+
+> No other creation or use of the System Voices, Live Captions or Personal Voice
+> is permitted by this License, including but not limited to the use, reproduction,
+> display, performance, recording, publishing or redistribution of any of the System
+> Voices, Live Captions or Personal Voice in a profit, non-profit, public sharing or
+> commercial context.
+
+So a personal project is fine, and shipping generated audio in a commercial product
+is what that clause rules out. Live playback inside a commercial app is less clear,
+and Apple has not answered [the developer forum question about
+it](https://developer.apple.com/forums/thread/812285). If this matters to your
+project, ask a lawyer rather than this README. That clause does not mention
+`SpeechAnalyzer`. Read the current text at
+[apple.com/legal/sla](https://www.apple.com/legal/sla/).
+
+### What it cannot do
+
+Encode MP3, Ogg or Opus. Detect a language from the audio. Read WebM, Ogg or MKV.
+Use Personal Voice: macOS reports it as denied to a command-line helper, so it is
+not wired up. Run two things at once on one `AppleSpeech`: a helper handles one
+request at a time, so create a second instance for work that must not wait.
 
 ## What macOS 27 adds
 
@@ -298,6 +553,9 @@ from apple_llm import AppleLLM, AsyncAppleLLM, probe
 
 probe()
 
+with AppleLLM(tier="cloud", fallback="device") as llm:   # on device when the cloud says no
+    llm.text("...")
+
 with AppleLLM(tier="auto", use_case="contentTagging") as llm:
     llm.text("...", system=..., temperature=..., images=[...], sampling=...)
     llm.stream("...", on_delta=print)
@@ -318,23 +576,42 @@ async with AsyncAppleLLM(tier="device") as llm:
 Pydantic is an optional extra (`pip install 'apple-llm[pydantic]'`); plain dict
 schemas need no extras.
 
+**Speech**, in both, is plain functions over a shared helper, or an `AppleSpeech`
+instance with a helper of its own ([details](#speech)):
+
+```ts
+import { installSpeechLanguage, listSpeechLanguages, listVoices, listen, probeSpeech, removeSpeechLanguage, speak,
+  synthesize, systemVoice, toSRT, toVTT, transcribe, transcribeStream, AppleSpeech } from 'apple-llm';
+```
+
+```python
+from apple_llm import (install_speech_language, list_speech_languages, list_voices, listen, listen_once, probe_speech,
+    remove_speech_language, speak, synthesize, system_voice, to_srt, to_vtt, transcribe, AppleSpeech, AsyncAppleSpeech)
+```
+
 ### Errors
 
 Typed, so you branch on a class rather than matching a message:
 `ModelUnavailableError` (with `reason` distinguishing
 `appleIntelligenceNotEnabled` / `modelNotReady` / `deviceNotEligible`),
-`SchemaRejectedError`, `ContextLengthError`, `QuotaError` (with `resetDate`
-where Apple provides one), `TimeoutError`, `SetupRequiredError`, `RefusalError`.
+`SchemaRejectedError`, `ContextLengthError`, `QuotaError` (Apple's cloud rate
+limit or quota, with `resetDate` where Apple provides one), `TimeoutError`,
+`SetupRequiredError`, `RefusalError`, `UnsupportedError` (an unknown voice, a
+language macOS cannot recognise, an MP3 output file), `PermissionDeniedError` (the
+microphone).
 
 ### CLI
 
 Both packages install the same one:
 
 ```bash
+apple-llm "What is the capital of Australia?"             # short for run
+git diff | apple-llm "Write a commit message for this"    # piped text goes before the prompt
 apple-llm probe
 apple-llm setup-cloud [--web-search]
 apple-llm chat                                            # interactive (npm)
-apple-llm serve                                           # OpenAI-compatible API (npm)
+apple-llm serve [--port 11434]                            # OpenAI- and Ollama-compatible API (npm)
+apple-llm run --tier cloud --fallback device "…"          # on device when the cloud says no
 apple-llm run --tier device --system "You are terse." -   # prompt on stdin
 apple-llm run --tier cloud --schema schema.json "Extract the fields"
 apple-llm run --image photo.png "What is in this image?"
@@ -350,6 +627,11 @@ apple-llm rewrite "gonna grab a bite"
 apple-llm proofread - < draft.txt
 apple-llm run --seed 42 "Reproducible output"
 apple-llm count --system "You are terse." -               # tokens before sending
+apple-llm speak "Hello there" --voice Samantha            # out loud; -o file.m4a saves it
+apple-llm voices [--language fr] [--all]
+apple-llm transcribe meeting.mp4 [-o meeting.srt]         # audio or video to text
+apple-llm listen [--once]                                 # the microphone, live
+apple-llm languages [install|remove <code>]
 ```
 
 ## What this package really is
@@ -372,6 +654,38 @@ which is why the live test suite fails if the median call exceeds 4s.
 Apple serialises inference regardless: four concurrent requests measured 29.19s
 against 29.45s sequentially. The request queue serialises deliberately, and
 concurrency above 1 buys nothing.
+
+### What speech cost to get right
+
+Each of these looked fine until it didn't, and most would have shipped silently:
+
+- **A zero-length buffer does not mean the end of the speech.**
+  `AVSpeechSynthesizer.write` emits them between segments of the text, so stopping
+  at the first one truncated a passage to its first two sentences, which looked
+  exactly like Apple limiting audio to a few seconds. Only `didFinish` means done.
+- **Word offsets restart with each segment.** Taken at face value, the last word
+  of a 30 minute render claimed to be at 11.9 seconds.
+- **`say -v` never says no.** Any name, real or not, exits 0 and uses the default
+  voice, so it took comparing the audio to learn that none of the Siri names work.
+- **A missing language fails as "Audio format is not supported",** and
+  `AssetInventory.status` reports `.supported` for models that are installed and
+  working. So the check is `installedLocales`, before any audio is touched.
+- **A new synthesizer costs 300ms before its first buffer; a reused one, 10ms.**
+  But reusing one with a delegate per request crashed the helper with SIGSEGV in
+  `TextToSpeech`, because a queued callback outlived its delegate. One delegate now
+  lives as long as the process.
+- **The only real limit on long audio was ours.** The wedge timer measures silence,
+  and a read-aloud is silent on the wire, so the helper sends a heartbeat every 20
+  seconds.
+- **macOS can cancel speech on its own.** If the helper's file is deleted while it
+  runs, as a disk cleaner might do to a cache, `AVSpeechSynthesizer` fires
+  `didCancel` within 0.1s and says nothing. Treated as finished, that was `ok: true`
+  with no sound. Counting words cannot catch it, because some voices send none.
+- **`say` exits 0 with words missing.** With the language model busy elsewhere, a
+  quarter of renders in Aman and Tara lost words, and a few were silent or 0.02s
+  long. Checking for errors or silence would never have shown it; transcribing the
+  files did. `AVSpeechSynthesizer` rendered 4,130 identical files under the same
+  load. So `say` renders run twice and must agree.
 
 ### The `GenerationSchema` dialect
 
@@ -512,7 +826,8 @@ APPLE_LLM_LIVE=1 pytest
 
 Cloud tests consume quota and need `APPLE_LLM_LIVE_CLOUD=1` as well. Everything
 live is gated on an env var *and* a runtime probe, so a machine without Apple
-Intelligence skips cleanly instead of failing.
+Intelligence skips cleanly instead of failing. The live speech tests are silent:
+read-alouds run at volume 0, and none opens the microphone.
 
 ## Contributing
 

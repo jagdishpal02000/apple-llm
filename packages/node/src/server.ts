@@ -1,13 +1,17 @@
 /**
- * An OpenAI-compatible HTTP server for Apple's models.
+ * An OpenAI- and Ollama-compatible HTTP server for Apple's models.
  *
  *   apple-llm serve                        # http://127.0.0.1:11436/v1
+ *   apple-llm serve --port 11434           # where Ollama apps look
  *
  * Point any OpenAI client at it — the official SDKs, LangChain, LlamaIndex,
  * editor plugins, Open WebUI — with any API key, and it talks to the on-device
  * model. Implements `POST /v1/chat/completions` (streaming, tools,
  * `response_format` with JSON Schema, images), `GET /v1/models` and
- * `GET /health`.
+ * `GET /health`; and Ollama's `/api/chat`, `/api/generate`, `/api/tags`,
+ * `/api/show`, `/api/ps` and `/api/version`, for the many apps that only speak
+ * Ollama. `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` do text to
+ * speech and speech recognition, and `GET /v1/audio/voices` lists the voices.
  *
  * Safe defaults, because a local model server is reachable by more than you
  * might think: it binds to 127.0.0.1 only; CORS is off, so a web page you
@@ -16,9 +20,10 @@
  * asks for the `apple-private-cloud` model by name.
  */
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { TempImages } from './attachments.js';
 import { AppleLLM, probe, type AppleLLMOptions, type GenerateResult, type TextOptions } from './client.js';
+import { CLOUD_CONTEXT_TOKENS } from './cloud.js';
 import type { SamplingMode, ToolCallRecord } from './device.js';
 import {
   AbortError,
@@ -34,8 +39,10 @@ import {
   TimeoutError,
   UnsupportedError,
 } from './errors.js';
+import { parseLlmJson } from './json-recovery.js';
 import type { ChatMessage } from './messages.js';
 import type { JsonSchema } from './schema.js';
+import { AppleSpeech, toSRT, toVTT, type AudioFormat, type Transcript } from './speech.js';
 import { tool, type FunctionTool } from './tools.js';
 
 export const DEFAULT_PORT = 11436;
@@ -58,6 +65,101 @@ export interface ServerOptions extends Omit<AppleLLMOptions, 'tier'> {
   cors?: string;
   /** One line per request. Default: none. */
   log?: (line: string) => void;
+  /** The speech client behind `/v1/audio/*`. Default: one of its own. For tests. */
+  speech?: AppleSpeech;
+}
+
+/** Largest audio upload. The CLI and the library read files of any size. */
+const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
+
+/**
+ * OpenAI's `response_format` values, as what can actually be made.
+ *
+ * MP3 is OpenAI's default and many clients ask for it by name, but macOS has no
+ * MP3 or Ogg encoder. Those requests get AAC rather than an error, because
+ * refusing would lock out every app that hardcodes "mp3". Browsers and players
+ * go by the bytes and the Content-Type, which says what it really is.
+ */
+const SPEECH_FORMATS: Record<string, { format: AudioFormat; type: string; sampleRate?: number }> = {
+  mp3: { format: 'aac', type: 'audio/aac' },
+  opus: { format: 'aac', type: 'audio/aac' },
+  aac: { format: 'aac', type: 'audio/aac' },
+  flac: { format: 'flac', type: 'audio/flac' },
+  wav: { format: 'wav', type: 'audio/wav' },
+  // OpenAI defines this as 24 kHz 16-bit little-endian, whatever the voice's own rate.
+  pcm: { format: 'pcm', type: 'audio/pcm', sampleRate: 24000 },
+  m4a: { format: 'm4a', type: 'audio/mp4' },
+  aiff: { format: 'aiff', type: 'audio/aiff' },
+};
+
+/** OpenAI's voice names, for clients that send one and cannot be told otherwise. */
+const OPENAI_VOICES = new Set([
+  'alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'fable', 'marin', 'nova', 'onyx', 'sage', 'shimmer', 'verse',
+]);
+
+interface SpeechRequest {
+  input?: unknown;
+  voice?: unknown;
+  response_format?: unknown;
+  speed?: unknown;
+}
+
+export interface MultipartPart {
+  name: string;
+  filename?: string;
+  data: Buffer;
+}
+
+/** `multipart/form-data`, which is how every OpenAI client uploads audio. */
+export function parseMultipart(body: Buffer, boundary: string): MultipartPart[] {
+  const parts: MultipartPart[] = [];
+  const delimiter = Buffer.from(`--${boundary}`);
+  const between = Buffer.from(`\r\n--${boundary}`);
+  let start = body.indexOf(delimiter);
+  while (start !== -1) {
+    let cursor = start + delimiter.length;
+    if (body[cursor] === 0x2d && body[cursor + 1] === 0x2d) break;
+    if (body[cursor] === 0x0d && body[cursor + 1] === 0x0a) cursor += 2;
+    const headersEnd = body.indexOf('\r\n\r\n', cursor);
+    if (headersEnd === -1) break;
+    const headers = body.subarray(cursor, headersEnd).toString('utf8');
+    const contentStart = headersEnd + 4;
+    const next = body.indexOf(between, contentStart);
+    if (next === -1) break;
+    const disposition = /content-disposition:([^\r\n]*)/i.exec(headers)?.[1] ?? '';
+    const name = /[;\s]name="([^"]*)"/i.exec(disposition)?.[1];
+    if (name !== undefined) {
+      const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
+      parts.push({ name, ...(filename === undefined ? {} : { filename }), data: body.subarray(contentStart, next) });
+    }
+    start = next + 2;
+  }
+  return parts;
+}
+
+/** OpenAI's `verbose_json`. Fields Whisper fills in and macOS has no equivalent for stay neutral. */
+function verboseTranscript(transcript: Transcript, words: boolean): Record<string, unknown> {
+  return {
+    task: 'transcribe',
+    language: transcript.language,
+    duration: transcript.duration,
+    text: transcript.text,
+    segments: transcript.segments.map((segment, id) => ({
+      id,
+      seek: 0,
+      start: segment.start,
+      end: segment.end,
+      text: segment.text,
+      tokens: [],
+      temperature: 0,
+      avg_logprob: 0,
+      compression_ratio: 1,
+      no_speech_prob: 0,
+    })),
+    ...(words
+      ? { words: transcript.segments.flatMap((segment) => (segment.words ?? []).map((word) => ({ word: word.text, start: word.start, end: word.end }))) }
+      : {}),
+  };
 }
 
 /** OpenAI's error envelope, with a status code chosen from the typed error. */
@@ -213,7 +315,7 @@ function usageOf(result: GenerateResult<unknown>): Record<string, number> | unde
   };
 }
 
-async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Promise<unknown> {
+async function readRawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -221,7 +323,11 @@ async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Pr
     if (size > limit) throw new HttpError(413, 'Request body too large.');
     chunks.push(chunk as Buffer);
   }
-  const text = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Promise<unknown> {
+  const text = (await readRawBody(req, limit)).toString('utf8');
   if (text === '') return {};
   try {
     return JSON.parse(text);
@@ -230,9 +336,160 @@ async function readBody(req: http.IncomingMessage, limit = 32 * 1024 * 1024): Pr
   }
 }
 
+// Ollama's API. Most Mac apps that run a local model — Enchanted, Msty,
+// Raycast, Obsidian plugins, Page Assist, Open WebUI — speak it rather than
+// OpenAI's, so answering it too lets them use Apple's model with no code: run
+// `apple-llm serve --port 11434` (Ollama's port) and pick a model. Streaming
+// is NDJSON and on unless `stream: false`, as in Ollama.
+
+/**
+ * The Ollama API version reported to clients, which gate features on it —
+ * structured `format` needs 0.5 — rather than on what a server answers.
+ */
+const OLLAMA_API_VERSION = '0.12.0';
+
+/** Fixed, so `/api/tags` does not report the models as new on every call. */
+const LISTED_AT = new Date().toISOString();
+
+interface OllamaMessage {
+  role: string;
+  content?: unknown;
+  images?: string[];
+  tool_calls?: Array<{ function: { name: string; arguments?: unknown } }>;
+  tool_name?: string;
+}
+
+interface OllamaRequest {
+  model?: string;
+  messages?: unknown;
+  prompt?: string;
+  system?: string;
+  images?: string[];
+  stream?: boolean;
+  format?: unknown;
+  options?: { temperature?: number; num_predict?: number; seed?: number; top_p?: number; top_k?: number };
+  tools?: ChatRequest['tools'];
+}
+
+/** The tier an Ollama model name asks for. `apple-on-device:latest` is `apple-on-device`, as in Ollama. */
+function ollamaTier(model: string | undefined): 'device' | 'cloud' | undefined {
+  const name = (model ?? '').split(':')[0];
+  return name in MODELS ? MODELS[name as keyof typeof MODELS] : undefined;
+}
+
+function ollamaModels(): Array<Record<string, unknown>> {
+  return Object.keys(MODELS).map((id) => ({
+    name: `${id}:latest`,
+    model: `${id}:latest`,
+    modified_at: LISTED_AT,
+    size: 0,
+    digest: createHash('sha256').update(id).digest('hex'),
+    details: { parent_model: '', format: 'apple', family: 'apple', families: ['apple'], parameter_size: '', quantization_level: '' },
+  }));
+}
+
+/**
+ * Ollama messages as ChatMessages. Ollama's tool calls carry no ids, so they
+ * are numbered here, and each tool result is paired with the oldest unanswered
+ * call of its `tool_name` — or, when it names none, the oldest call at all.
+ */
+async function fromOllamaMessages(raw: unknown, images: TempImages, signal: AbortSignal): Promise<ChatMessage[]> {
+  if (!Array.isArray(raw)) throw new HttpError(400, '`messages` must be an array.');
+  const out: ChatMessage[] = [];
+  const unanswered: Array<{ id: string; name: string }> = [];
+  let next = 0;
+  for (const message of raw as OllamaMessage[]) {
+    const content = textOf(message.content);
+    switch (message.role) {
+      case 'system':
+        out.push({ role: 'system', content });
+        break;
+      case 'user': {
+        const paths: string[] = [];
+        for (const image of message.images ?? []) paths.push(await images.add(image, undefined, signal));
+        out.push({ role: 'user', content, ...(paths.length > 0 ? { images: paths } : {}) });
+        break;
+      }
+      case 'assistant': {
+        const toolCalls = (message.tool_calls ?? []).map((call) => {
+          next += 1;
+          const id = `call_${next}`;
+          unanswered.push({ id, name: call.function.name });
+          const args = call.function.arguments;
+          return { id, name: call.function.name, arguments: typeof args === 'string' ? parseArguments(args) : (args ?? {}) };
+        });
+        out.push({ role: 'assistant', content, ...(toolCalls.length > 0 ? { toolCalls } : {}) });
+        break;
+      }
+      case 'tool': {
+        let index = unanswered.findIndex((call) => call.name === message.tool_name);
+        if (index < 0 && message.tool_name === undefined && unanswered.length > 0) index = 0;
+        const call = index < 0 ? undefined : unanswered.splice(index, 1)[0];
+        next += 1;
+        out.push({ role: 'tool', toolCallId: call?.id ?? `call_${next}`, name: message.tool_name ?? call?.name, content });
+        break;
+      }
+      default:
+        throw new HttpError(400, `Message role "${message.role}" is not supported.`);
+    }
+  }
+  return out;
+}
+
+function ollamaCall(body: OllamaRequest, signal: AbortSignal): TextOptions {
+  const options = body.options ?? {};
+  let sampling: SamplingMode | undefined;
+  if (options.top_p !== undefined) sampling = { mode: 'threshold', p: options.top_p, seed: options.seed };
+  else if (options.seed !== undefined) sampling = { mode: 'topK', k: options.top_k ?? 50, seed: options.seed };
+  const functions: FunctionTool[] = [];
+  for (const def of body.tools ?? []) {
+    if (def.type !== 'function' || def.function === undefined) continue;
+    functions.push(tool({ name: def.function.name, description: def.function.description, parameters: def.function.parameters }));
+  }
+  return {
+    temperature: options.temperature,
+    // Ollama spells "no limit" as -1, and "fill the context" as -2.
+    maxTokens: options.num_predict !== undefined && options.num_predict > 0 ? options.num_predict : undefined,
+    sampling,
+    tools: functions.length > 0 ? functions : undefined,
+    signal,
+  };
+}
+
+/** The closing fields of an Ollama reply. Durations are nanoseconds there. */
+function ollamaStats(result: GenerateResult<unknown>): Record<string, unknown> {
+  const ns = result.durationMs * 1_000_000;
+  return {
+    done_reason: result.finishReason === 'length' ? 'length' : 'stop',
+    total_duration: ns,
+    load_duration: 0,
+    prompt_eval_count: result.usage?.inputTokens ?? 0,
+    prompt_eval_duration: 0,
+    eval_count: result.usage?.outputTokens ?? 0,
+    eval_duration: ns,
+  };
+}
+
+function ollamaToolCalls(calls: ToolCallRecord[]): Array<Record<string, unknown>> {
+  return calls
+    .filter((call) => call.output === undefined)
+    .map((call) => ({ function: { name: call.name, arguments: call.arguments ?? {} } }));
+}
+
+/** `format: "json"` promises JSON, so a reply wrapped in prose or a fence is unwrapped. */
+function jsonOnly(text: string): string {
+  try {
+    return JSON.stringify(parseLlmJson(text));
+  } catch {
+    return text;
+  }
+}
+
 /** Build the server without listening. `serve()` is the one-liner. */
 export function createServer(options: ServerOptions = {}): http.Server {
-  const { port: _port, host: _host, tier: defaultTier = 'device', apiKey, cors, log, ...llmOptions } = options;
+  const { port: _port, host: _host, tier: defaultTier = 'device', apiKey, cors, log, speech: givenSpeech, ...llmOptions } = options;
+  let ownSpeech: AppleSpeech | undefined;
+  const speechClient = (): AppleSpeech => givenSpeech ?? (ownSpeech ??= new AppleSpeech());
   const clients = new Map<string, AppleLLM>();
   const clientFor = (tier: 'device' | 'cloud' | 'auto'): AppleLLM => {
     let client = clients.get(tier);
@@ -297,8 +554,218 @@ export function createServer(options: ServerOptions = {}): http.Server {
         const body = (await readBody(req)) as ChatRequest;
         return chatCompletions(body);
       }
+      if (req.method === 'POST' && pathname === '/v1/audio/speech') return audioSpeech();
+      if (req.method === 'POST' && pathname === '/v1/audio/transcriptions') return audioTranscription();
+      if (req.method === 'GET' && pathname === '/v1/audio/voices') {
+        send(200, { object: 'list', data: await speechClient().voices() });
+        return undefined;
+      }
+      if (pathname === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
+        // Ollama clients look for this text to tell that a server is up.
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...corsHeaders() });
+        res.end(req.method === 'HEAD' ? undefined : 'Ollama is running');
+        return undefined;
+      }
+      if (pathname.startsWith('/api/')) {
+        return ollama(pathname).catch((error: unknown) => {
+          // Ollama's error shape is `{ error: message }`, not OpenAI's envelope.
+          const message = error instanceof Error ? error.message : String(error);
+          send(errorResponse(error).status, { error: message });
+          return `failed: ${message.split('\n')[0]}`;
+        });
+      }
       send(404, { error: { message: `No route for ${req.method} ${pathname}.`, type: 'invalid_request_error', code: 'not_found', param: null } });
       return undefined;
+    };
+
+    const audioSpeech = async (): Promise<string> => {
+      const body = (await readBody(req)) as SpeechRequest;
+      if (typeof body.input !== 'string' || body.input.trim() === '') {
+        throw new HttpError(400, '`input` must be a non-empty string.');
+      }
+      const wanted = body.response_format === undefined ? 'mp3' : String(body.response_format);
+      const output = SPEECH_FORMATS[wanted];
+      if (output === undefined) {
+        throw new HttpError(400, `\`response_format\` must be one of ${Object.keys(SPEECH_FORMATS).join(', ')} (got "${wanted}").`);
+      }
+      const named = typeof body.voice === 'string' ? body.voice : undefined;
+      const voice = named === undefined || OPENAI_VOICES.has(named.toLowerCase()) ? undefined : named;
+      // OpenAI accepts 0.25 to 4, and macOS clamps below what it can do.
+      const speed = typeof body.speed === 'number' ? Math.min(4, Math.max(0.25, body.speed)) : undefined;
+      const made = await speechClient().synthesize(body.input, {
+        voice,
+        speed,
+        format: output.format,
+        sampleRate: output.sampleRate,
+        signal: controller.signal,
+      });
+      res.writeHead(200, {
+        'content-type': output.type,
+        'content-length': String(made.audio.length),
+        'x-apple-llm-voice': made.voice.name,
+        ...corsHeaders(),
+      });
+      res.end(made.audio);
+      return `audio/speech ${made.voice.name} ${made.duration.toFixed(1)}s`;
+    };
+
+    const audioTranscription = async (): Promise<string> => {
+      const contentType = req.headers['content-type'] ?? '';
+      const boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+      if (!/^multipart\/form-data/i.test(contentType) || boundary === null) {
+        throw new HttpError(400, 'Send the audio as multipart/form-data, with the audio in a `file` field.');
+      }
+      const parts = parseMultipart(await readRawBody(req, MAX_UPLOAD_BYTES), boundary[1] ?? boundary[2]);
+      const file = parts.find((part) => part.name === 'file');
+      if (file === undefined || file.data.length === 0) throw new HttpError(400, 'The `file` field is missing or empty.');
+      const field = (name: string): string | undefined => parts.find((part) => part.name === name)?.data.toString('utf8');
+      const format = field('response_format') ?? 'json';
+      if (!['json', 'text', 'srt', 'vtt', 'verbose_json'].includes(format)) {
+        throw new HttpError(400, `\`response_format\` must be json, text, srt, verbose_json or vtt (got "${format}").`);
+      }
+      const granularities = parts.filter((part) => part.name === 'timestamp_granularities[]' || part.name === 'timestamp_granularities').map((part) => part.data.toString('utf8'));
+      const wantWords = granularities.includes('word');
+      const prompt = field('prompt');
+      const transcript = await speechClient().transcribe(file.data, {
+        filename: file.filename,
+        language: field('language'),
+        words: wantWords || format === 'srt' || format === 'vtt',
+        // Whisper's prompt is free text and this takes terms, so lines and commas split it.
+        hints: prompt?.split(/[\n,]+/).map((term) => term.trim()).filter(Boolean),
+        signal: controller.signal,
+      });
+      if (format === 'json') {
+        send(200, { text: transcript.text });
+      } else if (format === 'verbose_json') {
+        send(200, verboseTranscript(transcript, wantWords));
+      } else {
+        const text = format === 'srt' ? toSRT(transcript) : format === 'vtt' ? toVTT(transcript) : transcript.text;
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...corsHeaders() });
+        res.end(text);
+      }
+      return `audio/transcriptions ${transcript.language} ${transcript.duration.toFixed(1)}s`;
+    };
+
+    /**
+     * One NDJSON line. The 200 goes out with the first one, so a request that
+     * fails before producing anything — the cloud rate limit, a bad schema —
+     * still gets a real status code.
+     */
+    const sendLine = (payload: unknown): void => {
+      if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/x-ndjson', ...corsHeaders() });
+      if (!res.destroyed) res.write(`${JSON.stringify(payload)}\n`);
+    };
+
+    const ollama = async (pathname: string): Promise<string | undefined> => {
+      if (req.method === 'GET' && pathname === '/api/version') {
+        send(200, { version: OLLAMA_API_VERSION });
+        return undefined;
+      }
+      if (req.method === 'GET' && pathname === '/api/tags') {
+        send(200, { models: ollamaModels() });
+        return undefined;
+      }
+      if (req.method === 'GET' && pathname === '/api/ps') {
+        // Nothing to unload: the models are the system's, not this server's.
+        send(200, { models: [] });
+        return undefined;
+      }
+      if (req.method === 'POST' && pathname === '/api/show') {
+        const body = (await readBody(req)) as { model?: string; name?: string };
+        // The Ollama CLI sends `model: ""` beside the real name in `name`.
+        const asked = body.model || body.name || '';
+        const tier = ollamaTier(asked);
+        if (tier === undefined) throw new HttpError(404, `model '${asked}' not found`);
+        const state = await probe();
+        const contextSize = tier === 'cloud' ? (state.cloud.contextSize ?? CLOUD_CONTEXT_TOKENS) : state.device.contextSize;
+        const capabilities = tier === 'cloud' ? state.cloud.capabilities : state.device.capabilities;
+        send(200, {
+          modelfile: '',
+          parameters: '',
+          template: '',
+          details: ollamaModels().find((m) => m.name === `${asked.split(':')[0]}:latest`)?.details,
+          model_info: { 'general.architecture': 'apple', ...(contextSize === undefined ? {} : { 'apple.context_length': contextSize }) },
+          // Tools are refused on the cloud tier (Shortcuts has no tool input).
+          capabilities: ['completion', ...(tier === 'device' ? ['tools'] : []), ...(capabilities?.vision === true ? ['vision'] : [])],
+          modified_at: LISTED_AT,
+        });
+        return undefined;
+      }
+      if (req.method === 'POST' && (pathname === '/api/chat' || pathname === '/api/generate')) {
+        return ollamaGenerate(pathname === '/api/chat', (await readBody(req)) as OllamaRequest);
+      }
+      throw new HttpError(404, `No route for ${req.method} ${pathname}.`);
+    };
+
+    const ollamaGenerate = async (chat: boolean, body: OllamaRequest): Promise<string> => {
+      const tier = ollamaTier(body.model) ?? defaultTier;
+      const model = body.model ?? (tier === 'cloud' ? 'apple-private-cloud' : 'apple-on-device');
+      const reply = (text: string, toolCalls?: Array<Record<string, unknown>>): Record<string, unknown> =>
+        chat
+          ? { message: { role: 'assistant', content: text, ...(toolCalls !== undefined && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) } }
+          : { response: text };
+      const images = new TempImages();
+      try {
+        let messages: ChatMessage[];
+        if (chat) {
+          messages = await fromOllamaMessages(body.messages ?? [], images, controller.signal);
+        } else {
+          const paths: string[] = [];
+          for (const image of body.images ?? []) paths.push(await images.add(image, undefined, controller.signal));
+          messages = [];
+          if (body.system !== undefined && body.system !== '') messages.push({ role: 'system', content: body.system });
+          if (body.prompt !== undefined && body.prompt !== '') {
+            messages.push({ role: 'user', content: body.prompt, ...(paths.length > 0 ? { images: paths } : {}) });
+          }
+        }
+        // An empty request is how Ollama clients load a model ahead of use.
+        if (!messages.some((m) => m.role !== 'system')) {
+          send(200, { model, created_at: new Date().toISOString(), ...reply(''), done: true, done_reason: 'load' });
+          return `${model} load`;
+        }
+
+        const jsonMode = body.format === 'json';
+        if (jsonMode) messages.unshift({ role: 'system', content: 'Reply with a single JSON object and nothing else.' });
+        const schema = body.format !== null && typeof body.format === 'object' ? (body.format as JsonSchema) : undefined;
+        const call = ollamaCall(body, controller.signal);
+        const client = clientFor(tier);
+        const whole = (): Promise<GenerateResult<unknown>> =>
+          schema === undefined ? client.generate(messages, call) : client.generate(messages, { ...call, schema });
+        const finalText = (result: GenerateResult<unknown>): string =>
+          result.finishReason === 'tool-calls' ? '' : jsonMode ? jsonOnly(result.text) : result.text;
+
+        if (body.stream === false) {
+          const result = await whole();
+          send(200, { model, created_at: new Date().toISOString(), ...reply(finalText(result), ollamaToolCalls(result.toolCalls)), done: true, ...ollamaStats(result) });
+          return `${model} ${chat ? 'chat' : 'generate'}`;
+        }
+
+        try {
+          let result: GenerateResult<unknown>;
+          if (schema === undefined && !jsonMode) {
+            const stream = client.stream(messages, call);
+            for await (const delta of stream) sendLine({ model, created_at: new Date().toISOString(), ...reply(delta), done: false });
+            result = await stream.result;
+          } else {
+            // JSON arrives whole, as on the OpenAI route: a partial document is not a usable delta.
+            result = await whole();
+            sendLine({ model, created_at: new Date().toISOString(), ...reply(finalText(result)), done: false });
+          }
+          const toolCalls = result.finishReason === 'tool-calls' ? ollamaToolCalls(result.toolCalls) : [];
+          if (chat && toolCalls.length > 0) sendLine({ model, created_at: new Date().toISOString(), ...reply('', toolCalls), done: false });
+          sendLine({ model, created_at: new Date().toISOString(), ...reply(''), done: true, ...ollamaStats(result) });
+        } catch (error) {
+          if (!res.headersSent) throw error;
+          // Mid-stream, the status is gone; Ollama clients read an error line.
+          sendLine({ error: error instanceof Error ? error.message : String(error) });
+          if (!res.destroyed) res.end();
+          return `${model} stream failed: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`;
+        }
+        if (!res.destroyed) res.end();
+        return `${model} ${chat ? 'chat' : 'generate'} stream`;
+      } finally {
+        await images.dispose();
+      }
     };
 
     const chatCompletions = async (body: ChatRequest): Promise<string> => {
@@ -387,7 +854,9 @@ export function createServer(options: ServerOptions = {}): http.Server {
           id,
           object: 'chat.completion',
           created,
-          model,
+          // The model that actually answered, which `auto` and `fallback` can
+          // make differ from the one asked for.
+          model: result.tier === 'cloud' ? 'apple-private-cloud' : 'apple-on-device',
           choices: [
             {
               index: 0,
@@ -416,6 +885,9 @@ export function createServer(options: ServerOptions = {}): http.Server {
       .catch((error: unknown) => {
         const { status, body } = errorResponse(error);
         if (error instanceof ModelBusyError && !res.headersSent) res.setHeader('retry-after', '2');
+        // Apple's cloud rate limit lasts minutes, so the OpenAI SDKs' default
+        // retries (seconds apart) only delay the error; they honour this header.
+        if (error instanceof QuotaError && !res.headersSent) res.setHeader('x-should-retry', 'false');
         send(status, body);
         log?.(`${req.method} ${req.url} ${status} ${Date.now() - started}ms ${error instanceof Error ? error.message.split('\n')[0] : ''}`);
       });
@@ -423,6 +895,7 @@ export function createServer(options: ServerOptions = {}): http.Server {
 
   server.on('close', () => {
     for (const client of clients.values()) client.close();
+    ownSpeech?.close();
   });
   return server;
 }

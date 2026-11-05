@@ -213,8 +213,8 @@ def test_close_leaves_no_helper_running(device_available):
 
 @pytest.mark.skipif(not LIVE_CLOUD, reason="set APPLE_LLM_LIVE_CLOUD=1 (consumes quota)")
 def test_cloud_round_trip():
-    if not probe()["cloud"].get("available"):
-        pytest.skip("the cloud shortcut is not installed")
+    cloud = probe()["cloud"]
+    assert cloud.get("available"), cloud.get("reason", "cloud tier unavailable")
     with AppleLLM(tier="cloud") as llm:
         assert "pong" in llm.text("Reply with the single word: pong").lower()
 

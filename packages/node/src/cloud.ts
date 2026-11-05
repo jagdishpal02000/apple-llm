@@ -59,6 +59,24 @@ export const CLOUD_CONTEXT_TOKENS = 32_768;
 const IMPORT_TIMEOUT_MS = 90_000;
 const IMPORT_POLL_MS = 2_000;
 
+/**
+ * Apple's per-device rate limit, which is all `shortcuts run` says about it.
+ *
+ * Underneath it is `PrivateCloudComputeError deniedDueToUserDeviceRateLimit`
+ * (surfacing as `WFAskLLMActionErrorDomain` 1508), and it is a different
+ * limiter from the quota `probe()` reads: `quotaUsage` keeps saying
+ * `belowLimit` the whole time this one is turning requests away. Ten calls in
+ * about two minutes were enough to trip it. Once tripped, privatecloudcomputed
+ * caches the denial and refuses locally in under a second until it expires,
+ * so retrying sooner cannot help.
+ */
+const RATE_LIMITED = /can.?t be completed right now|cannot be completed right now/i;
+
+const RATE_LIMIT_MESSAGE =
+  'Apple Private Cloud Compute is rate-limiting this Mac ("Your request can\'t be completed right now").\n' +
+  'This per-device limit is separate from the quota probe() reports, and it lifts on its own after a few minutes. ' +
+  'Wait and try again, or answer on device instead (tier: "device", or fallback: "device").';
+
 export interface CloudProbe {
   available: boolean;
   reason?: string;
@@ -140,12 +158,34 @@ export function shortcutDefinition(webSearch = false): Record<string, unknown> {
   };
 }
 
+/**
+ * How the cloud tier asks for JSON, appended *after* the prompt.
+ *
+ * Shortcuts has no system role, so instructions are just text, and the Use
+ * Model action is tuned for conversational replies. With this request placed
+ * before the question, the server model answered "Give me a city in France"
+ * with `Paris, population 2161000` — the right fields, as prose.
+ */
+export function cloudJsonInstruction(schema: JsonSchema): string {
+  return (
+    'Reply with only a JSON value that matches this JSON Schema: no prose before or after it, ' +
+    'no Markdown, no code fence.\n\n' +
+    JSON.stringify(schema, null, 2)
+  );
+}
+
 async function listShortcuts(): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync('shortcuts', ['list'], { timeout: 20_000 });
     return stdout.split('\n').map((l) => l.trim()).filter((l) => l !== '');
-  } catch {
-    return [];
+  } catch (error) {
+    const err = error as { code?: string; stderr?: string; message?: string; killed?: boolean };
+    const detail = err.code === 'ENOENT'
+      ? 'the shortcuts command was not found'
+      : err.killed === true
+        ? 'the command timed out'
+        : err.stderr?.trim() || err.message || String(error);
+    throw new AppleLLMError(`Could not list Shortcuts: ${detail}`, 'cloud', { cause: error });
   }
 }
 
@@ -230,17 +270,17 @@ export async function installCloudShortcut(
 /** Probe the cloud tier without constructing a client. */
 export async function probeCloud(): Promise<CloudProbe> {
   if (process.platform !== 'darwin') {
-    return { available: false, installed: false, reason: `unsupportedPlatform: this machine reports "${process.platform}"` };
+    return { available: false, reason: `unsupportedPlatform: this machine reports "${process.platform}"` };
   }
   if (!isAppleSiliconMac()) {
-    return { available: false, installed: false, reason: 'deviceNotEligible: Apple Intelligence needs Apple Silicon' };
+    return { available: false, reason: 'deviceNotEligible: Apple Intelligence needs Apple Silicon' };
   }
+  let count: number;
   try {
-    await execFileAsync('shortcuts', ['list'], { timeout: 20_000 });
-  } catch {
-    return { available: false, installed: false, reason: 'this system does not provide /usr/bin/shortcuts' };
+    count = await installCount();
+  } catch (error) {
+    return { available: false, reason: error instanceof Error ? error.message : String(error) };
   }
-  const count = await installCount();
   if (count === 0) {
     return { available: false, installed: false, reason: cloudSetupHint() };
   }
@@ -314,7 +354,7 @@ export class CloudClient {
     if (this.ready) return;
     const probe = await probeCloud();
     if (!probe.available) {
-      if (probe.installed !== true) {
+      if (probe.installed === false) {
         throw new SetupRequiredError(probe.reason ?? cloudSetupHint(), 'setup-cloud', 'cloud');
       }
       throw new AppleLLMError(probe.reason ?? 'the cloud tier is unavailable', 'cloud');
@@ -384,12 +424,8 @@ export class CloudClient {
    * not a guarantee — unlike on device.
    */
   async json(request: CloudRequest & { schema: JsonSchema }): Promise<unknown> {
-    const instruction =
-      'Reply with a single JSON value matching this JSON Schema. ' +
-      'Output only the JSON, with no commentary and no code fence.\n\n' +
-      `${JSON.stringify(request.schema, null, 2)}`;
-    const system = request.system ? `${request.system}\n\n${instruction}` : instruction;
-    return parseLlmJson(await this.text({ ...request, system }));
+    const { schema, ...rest } = request;
+    return parseLlmJson(await this.text({ ...rest, prompt: `${request.prompt}\n\n${cloudJsonInstruction(schema)}` }));
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -448,6 +484,9 @@ export function describeRunFailure(error: unknown, name = CLOUD_SHORTCUT_NAME): 
       'cloud',
       resetDate !== undefined && !Number.isNaN(resetDate.getTime()) ? resetDate : undefined,
     );
+  }
+  if (RATE_LIMITED.test(stderr)) {
+    return new QuotaError(RATE_LIMIT_MESSAGE, 'cloud');
   }
   if (/Couldn.t find shortcut/i.test(stderr)) {
     return new SetupRequiredError(

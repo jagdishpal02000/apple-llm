@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppleLLM, probe } from '../src/index.js';
 import { DeviceClient, probeDevice } from '../src/device.js';
 import { cacheDir, ensureBinary, fingerprint, helperSource } from '../src/compile.js';
@@ -148,9 +149,10 @@ onDevice('live: on-device', () => {
   it('closes without leaving its helper running', async () => {
     if (gate()) return;
     // Other clients in this file legitimately hold a helper open, so compare
-    // pids rather than asserting none is running at all.
+    // pids rather than asserting none is running at all. Only this process's
+    // children count: other test files run in parallel and start their own.
     const pids = async (): Promise<Set<string>> => {
-      const { stdout } = await execFileAsync('bash', ['-c', 'pgrep -f "fm-helper-.* --serve" || true']);
+      const { stdout } = await execFileAsync('bash', ['-c', `pgrep -P ${process.pid} -f "fm-helper-.* --serve" || true`]);
       return new Set(stdout.split('\n').map((l) => l.trim()).filter(Boolean));
     };
     const before = await pids();
@@ -174,16 +176,27 @@ onCompile('live: compile from a cold cache', () => {
     if (!deviceAvailable) return;
     const source = await helperSource();
     const triple = (await hostTarget()) ?? process.arch;
-    const target = path.join(cacheDir(), `fm-helper-${fingerprint(source, triple)}`);
-    await rm(target, { force: true });
+    // A cache of its own: deleting the shared binary would break whatever the
+    // other test files, running in parallel, were about to start.
+    const home = await mkdtemp(path.join(os.tmpdir(), 'apple-llm-cold-'));
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      const target = path.join(cacheDir(), `fm-helper-${fingerprint(source, triple)}`);
+      expect(target.startsWith(home)).toBe(true);
 
-    const progress: string[] = [];
-    const rebuilt = await ensureBinary((p) => progress.push(p.status), { force: true });
-    expect(rebuilt).toBe(target);
-    // The one-time compile takes seconds and must be reported, not look like a hang.
-    expect(progress.join(' ')).toMatch(/building/i);
-    const { stdout } = await execFileAsync(rebuilt, ['--probe'], { timeout: 30_000 });
-    expect(JSON.parse(stdout.trim()).available).toBe(true);
+      const progress: string[] = [];
+      const rebuilt = await ensureBinary((p) => progress.push(p.status), { force: true });
+      expect(rebuilt).toBe(target);
+      // The one-time compile takes seconds and must be reported, not look like a hang.
+      expect(progress.join(' ')).toMatch(/building/i);
+      const { stdout } = await execFileAsync(rebuilt, ['--probe'], { timeout: 30_000 });
+      expect(JSON.parse(stdout.trim()).available).toBe(true);
+    } finally {
+      homedir.mockRestore();
+      // Later calls in this file should get the real cache back, not this one.
+      await ensureBinary(undefined, { force: true });
+      await rm(home, { recursive: true, force: true });
+    }
   }, 300_000);
 });
 
@@ -192,7 +205,7 @@ const onCloud = LIVE && LIVE_CLOUD ? describe : describe.skip;
 onCloud('live: private cloud compute (consumes quota)', () => {
   it('completes one round trip', async () => {
     const result = await probe();
-    if (!result.cloud.available) return;
+    expect(result.cloud.available, result.cloud.reason).toBe(true);
     const llm = new AppleLLM({ tier: 'cloud' });
     try {
       const out = await llm.text('Reply with the single word: pong');

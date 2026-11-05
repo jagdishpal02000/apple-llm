@@ -1,7 +1,8 @@
 # apple-llm
 
-Apple's on-device and Private Cloud Compute LLMs, from Python. No API key, no
-account, no developer program membership.
+Apple's on-device and Private Cloud Compute LLMs, from Python, plus the voices
+and speech recognition built into macOS. No API key, no account, no developer
+program membership.
 
 [![PyPI](https://img.shields.io/pypi/v/apple-llm)](https://pypi.org/project/apple-llm/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/apple-llm)](https://pypi.org/project/apple-llm/)
@@ -63,9 +64,79 @@ async with AsyncAppleLLM(tier="device") as llm:
 Cleanup is registered with both `atexit` and `weakref.finalize`, so a wedged
 helper never outlives the interpreter.
 
+## Speech
+
+```python
+from apple_llm import listen, listen_once, list_voices, speak, synthesize, to_srt, transcribe
+
+speak("Hello there")                                  # out loud, in your System voice
+speak("Bonjour", language="fr")                       # the best French voice on this Mac
+speak("Faster", voice="Samantha", speed=1.5, pitch=1.1, volume=0.8)
+
+voices = list_voices(language="en", novelty=False)
+
+audio = synthesize("Hello there", format="wav").audio                 # bytes
+synthesize(long_article, voice="Samantha", out="article.m4a")         # or a file
+words = synthesize("Every word has a time.", words=True).words
+
+result = transcribe("meeting.mp4")                                    # audio or video
+result.text, result.segments, result.language
+subtitles = transcribe(data, language="en-US", words=True).to_srt()   # or the bytes of a file
+
+said = listen_once().text                             # returns when you pause
+with listen(continuous=True) as session:              # until session.stop()
+    for event in session:
+        print(event.text, event.final)
+```
+
+None of this needs Apple Intelligence or costs quota, and it runs on your Mac; the
+only network use is downloading a recognition language the first time you use it.
+
+- **Length is not a limit.** On an M4 Air, 30 minutes of speech renders in 18
+  seconds and transcribes in 28, and a read-aloud can run as long as you like. For
+  long text pass `out`: 30 minutes is 11.3 MB as M4A and 80.4 MB as WAV, and without
+  `out` it is all in memory.
+- **Voices.** `voice` is a name or an id; an unknown one is an error suggesting
+  close matches. The default is your System voice, and better ones are free
+  downloads: search System Settings for "System voice". A few voices are only
+  reachable through `say` (`engine == "say"`): those have speed, but no pitch, volume,
+  SSML or word timings, and asking for those is an error. They can also lose words
+  while Apple's language model is busy in another process, so a file is rendered
+  twice and kept only when the two agree; speaking aloud cannot be checked that way.
+  `avspeech` voices are not affected.
+- **Siri voices.** Apple does not let apps choose them. Where macOS lists one under
+  the System voice setting, choose it there and `speak()` with no `voice` should
+  use it; this path has not been tested with a Siri voice selected.
+  [More](https://github.com/jagdishpal02000/apple-llm#siri-voices).
+- **Formats.** `wav`, `m4a`, `aac`, `flac`, `aiff`, `caf` and `pcm` (raw samples).
+  macOS cannot encode MP3, Ogg or Opus. It reads WAV, AIFF, CAF, MP3, M4A, AAC, FLAC
+  and MP4 or MOV video, but not WebM, Ogg or MKV.
+- **Recognition.** Name the `language`, because it is not detected; the default is
+  this Mac's. 68 languages on macOS 27; a missing one downloads on first use, in
+  about 25 seconds, unless `download=False`. `words=True` adds word timings, `hints`
+  names terms it might miss, and `on_segment` and `on_progress` report on a long file.
+- **The microphone.** macOS asks once, on behalf of whichever app launched this. It
+  hears everything, including `speak()` through your speakers. `stop()` finishes and
+  keeps what it heard; `cancel()` discards it. A `final=False` event is a guess the
+  next one replaces.
+- **Ctrl-C** stops speech mid-word and raises `KeyboardInterrupt` as usual.
+- **One at a time.** The functions share one helper, which handles one request at a
+  time. Use `AppleSpeech()` for work that must not wait; it has a helper of its own.
+  `AsyncAppleSpeech` is the same API, awaitable.
+
+The audio endpoints (`/v1/audio/speech`, `/v1/audio/transcriptions`) are on the npm
+package's server. The [repository README](https://github.com/jagdishpal02000/apple-llm#speech)
+has the measurements.
+
+**macOS's voices come with macOS's terms.** Apple's licence allows them for personal,
+non-commercial use and rules out recording or publishing them in a commercial
+context. [Read this](https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices)
+before building a product on text to speech.
+
 ## Read this before you use it
 
-- **macOS 26+ on Apple Silicon.** No fallback anywhere else.
+- **macOS 26+ on Apple Silicon.** No fallback anywhere else. Apple Intelligence has
+  to be on for the models, but not for speech.
 - **The Xcode Command Line Tools** (`xcode-select --install`), for compiling
   the helper. Full Xcode is not needed.
 - **The on-device model is small** (~20B sparse, 1–4B active, 8192-token context
@@ -75,6 +146,11 @@ helper never outlives the interpreter.
   Compute, off your machine. Free but quota'd, reached through a private
   Shortcuts action Apple can change in any OS release, and with no constrained
   decoding — so `json()` there is a request, not a guarantee.
+- **The cloud tier is rate-limited per Mac**, separately from the quota and
+  invisibly to `probe()`: ten calls in about two minutes tripped it here, and
+  every call was then refused for a few minutes, as a `QuotaError`. Use it for the
+  calls that need it, not batch jobs, and let the device take over:
+  `AppleLLM(tier="cloud", fallback="device")`.
 - **Streaming is text-only, tools are Apple's built-ins.** `stream()` gives
   partials-as-they-arrive; `tools=["ocr", "barcode", "spotlight"]` enables
   on-device Vision/Spotlight tools. Generic user-supplied function calling is
@@ -172,8 +248,13 @@ with AppleLLM(guardrails="permissive") as llm:
 
 `ModelUnavailableError` (`.reason` is `appleIntelligenceNotEnabled` /
 `modelNotReady` / `deviceNotEligible` / …), `SchemaRejectedError`,
-`ContextLengthError`, `QuotaError` (`.reset_date`), `TimeoutError`,
-`SetupRequiredError`, `RefusalError` — all subclasses of `AppleLLMError`.
+`SchemaValidationError` (a cloud reply with no JSON in it, after one repair;
+`.text` is what the model said), `ContextLengthError`, `QuotaError` (Apple's
+cloud rate limit or quota; `.reset_date` when Apple gives one), `TimeoutError`,
+`SetupRequiredError` (including a speech language that is not installed),
+`RefusalError`, `UnsupportedError` (an unknown voice, a language macOS cannot
+recognise, an MP3 output file; also a `ValueError`), `PermissionDeniedError` (the
+microphone), `CancelledError` — all subclasses of `AppleLLMError`.
 
 Note `apple_llm.TimeoutError` deliberately shadows the builtin name; import it
 explicitly.
@@ -181,8 +262,11 @@ explicitly.
 ## CLI
 
 ```bash
+apple-llm "What is the capital of Australia?"   # short for run
+git diff | apple-llm "Write a commit message"   # piped text goes in before the prompt
 apple-llm probe
 apple-llm setup-cloud [--web-search]     # one-time, generates + signs locally
+apple-llm run --tier cloud --fallback device "…"   # on device when the cloud says no
 apple-llm run --tier device --system "You are terse." -
 apple-llm run --tier cloud --schema schema.json "Extract the fields"
 apple-llm run --image photo.png "What is in this image?"
@@ -197,16 +281,22 @@ apple-llm rewrite "gonna grab a bite"
 apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"
 apple-llm run --seed 42 "Reproducible output"
 apple-llm count --system "You are terse." -    # tokens before sending
+apple-llm speak "Hello there" --voice Samantha # out loud; no quotes needed
+apple-llm speak --file notes.txt -o notes.m4a  # or save it, any length
+apple-llm voices [--language fr] [--all]       # the voices on this Mac
+apple-llm transcribe meeting.mp4 -o meeting.srt  # the extension picks text, json, srt or vtt
+apple-llm listen [--once]                      # the microphone, live; Ctrl-C keeps what it heard
+apple-llm languages [install|remove <code>]    # what it can recognise
 ```
 
 ## Schemas
 
 `json()` runs your schema through `to_apple_schema()`, which rewrites it into the
-restricted dialect Apple's `GenerationSchema` decoder accepts — eight rules
+restricted dialect Apple's `GenerationSchema` decoder accepts — nine rules
 covering unions, `x-order`, enums, titles, `$ref`-by-title, `additionalProperties`,
-string-typed `const`, and empty objects. Rule 8 exists because pydantic titles
-every property and Apple rejects a titled string. See the
-[full notes in the repo](https://github.com/jagdish/apple-llm#the-generationschema-dialect).
+string-typed `const`, empty objects and `pattern`. Rule 8 exists because
+pydantic titles every property and Apple rejects a titled string. See the
+[full notes in the repo](https://github.com/jagdishpal02000/apple-llm#the-generationschema-dialect).
 
 ## License
 

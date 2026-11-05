@@ -53,9 +53,9 @@ export class FakeChild extends EventEmitter {
     this.emit('close', code);
   }
 
-  /** Requests only — control lines (cancel, toolResult) filtered out. */
+  /** Requests only — control lines (cancel, toolResult, endInput) filtered out. */
   get requests(): Array<Record<string, unknown>> {
-    return this.written.filter((m) => m.op !== 'cancel' && m.op !== 'toolResult');
+    return this.written.filter((m) => m.op !== 'cancel' && m.op !== 'toolResult' && m.op !== 'endInput');
   }
 
   controls(op: string): Array<Record<string, unknown>> {
