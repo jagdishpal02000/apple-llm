@@ -129,7 +129,7 @@ package's server. The [repository README](https://github.com/jagdishpal02000/app
 has the measurements.
 
 **macOS's voices come with macOS's terms.** Apple's licence allows them for personal,
-non-commercial use and rules out recording or publishing them in a commercial
+non-commercial use and rules out recording or publishing them in a public or commercial
 context. [Read this](https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices)
 before building a product on text to speech.
 

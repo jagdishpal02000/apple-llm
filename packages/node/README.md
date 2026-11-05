@@ -57,7 +57,7 @@ seconds, once, with the Xcode Command Line Tools) and stays warm between calls.
   Private Cloud Compute. The default, `auto`, uses the device when it can.
 - **macOS's voices come with macOS's terms.** Apple's licence allows them for
   personal, non-commercial use and rules out recording or publishing them in a
-  commercial context. [Read this](https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices)
+  public or commercial context. [Read this](https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices)
   before building a product on text to speech.
 
 ## Quick tour

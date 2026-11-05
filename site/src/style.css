@@ -297,6 +297,7 @@ h3 {
 .mark {
   font: 600 15px/1 var(--mono);
   text-decoration: none;
+  white-space: nowrap;
   letter-spacing: -0.02em;
   margin: 0;
 }
@@ -324,6 +325,7 @@ h3 {
 .nav-gh {
   color: var(--ink) !important;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .theme {
@@ -389,6 +391,46 @@ h3 {
   border: 1px solid var(--rule);
   border-radius: 4px;
   background: var(--raised);
+}
+
+.hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 28px;
+}
+
+.hero-tags .kicker {
+  margin: 0;
+}
+
+.new {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 11px 4px 4px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.new:hover {
+  border-color: var(--ink-3);
+}
+
+.new b {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 2px;
+  background: var(--lime);
+  color: var(--on-lime);
+  font: 600 12px/1.4 var(--mono);
+  white-space: nowrap;
 }
 
 .kicker i {
@@ -1462,6 +1504,18 @@ pre > code[data-lang] {
   .cloud-spec {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     row-gap: 24px;
+  }
+}
+
+@media (max-width: 400px) {
+  .nav-gh .stars {
+    display: none;
+  }
+}
+
+@media (max-width: 340px) {
+  .nav-keep + .nav-keep {
+    display: none;
   }
 }
 

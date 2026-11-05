@@ -347,7 +347,8 @@ original content and projects for your personal, non-commercial use", then says:
 > commercial context.
 
 So a personal project is fine, and shipping generated audio in a commercial product
-is what that clause rules out. Live playback inside a commercial app is less clear,
+is what that clause rules out. Its wording also reaches publishing a recording
+publicly, even from a free or non-profit project. Live playback inside a commercial app is less clear,
 and Apple has not answered [the developer forum question about
 it](https://developer.apple.com/forums/thread/812285). If this matters to your
 project, ask a lawyer rather than this README. That clause does not mention
