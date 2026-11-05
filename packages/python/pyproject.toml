@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apple-llm"
 version = "0.3.0"
-description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
+description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python, plus text to speech and speech to text in macOS's own voices and recognition. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
