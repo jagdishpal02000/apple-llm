@@ -1276,6 +1276,26 @@ pre > code[data-lang] {
   border-color: transparent;
 }
 
+.promo {
+  margin: clamp(32px, 5vw, 56px) 0 0;
+}
+
+.promo video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: #0a0b0d;
+}
+
+.promo figcaption {
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
 #speech .codebox {
   margin-top: clamp(32px, 5vw, 56px);
 }
