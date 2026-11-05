@@ -148,7 +148,7 @@ before building a product on text to speech.
   decoding — so `json()` there is a request, not a guarantee.
 - **The cloud tier is rate-limited per Mac**, separately from the quota and
   invisibly to `probe()`: ten calls in about two minutes tripped it here, and
-  every call was then refused for LOCKOUT, as a `QuotaError`. Use it for the
+  every call was then refused for a few minutes, as a `QuotaError`. Use it for the
   calls that need it, not batch jobs, and let the device take over:
   `AppleLLM(tier="cloud", fallback="device")`.
 - **Streaming is text-only, tools are Apple's built-ins.** `stream()` gives

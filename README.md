@@ -100,7 +100,7 @@ request rather than a guarantee.
 
 **The cloud tier is rate-limited per Mac.** Apple's Private Cloud Compute stops
 answering a Mac that calls it too often: ten calls in about two minutes tripped
-it here, and it then refused every call for LOCKOUT — while `probe()` still
+it here, and it then refused every call for a few minutes — while `probe()` still
 reported the quota as `belowLimit`, because this is a separate, short-term
 limiter that nothing can read in advance. A refused call raises `QuotaError`
 (HTTP 429 from the server). Use the cloud for the calls that need it rather

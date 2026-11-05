@@ -10,7 +10,7 @@
   (`deniedDueToUserDeviceRateLimit` underneath). It is a different limiter from
   the quota `probe()` reads, which keeps saying `belowLimit` the whole time, so
   nothing warned of it and the error read like a bug. Ten calls in about two
-  minutes tripped it, and it then refused every call for LOCKOUT_PLACEHOLDER. It
+  minutes tripped it, and it then refused every call for a few minutes. It
   is now a `QuotaError` that says what happened and what to do; the server
   answers it with HTTP 429 and `x-should-retry: false`, so OpenAI SDKs fail fast
   instead of retrying seconds later into a lockout that lasts much longer.

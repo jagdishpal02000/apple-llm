@@ -215,7 +215,7 @@ costs no API key and no money, only Apple's per-device quota
 
 **Apple rate-limits it per Mac**, separately from that quota and invisibly to
 `probe()`: ten calls in about two minutes tripped the limit here, and every call
-was then refused for LOCKOUT. A refused call is a `QuotaError` (HTTP 429 from
+was then refused for a few minutes. A refused call is a `QuotaError` (HTTP 429 from
 the server). Use the cloud for the calls that need it, not for batch jobs, and
 let the device answer when it says no:
 
