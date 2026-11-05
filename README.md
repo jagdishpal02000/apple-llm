@@ -20,6 +20,7 @@ microphone. [Speech](#speech) needs no Apple Intelligence, and it runs on your M
 **[Website](https://jagdishpal02000.github.io/apple-llm/)** ·
 [Node API](packages/node/README.md) ·
 [Python](packages/python/README.md) ·
+[AI agent guide](llms.txt) ·
 [Changelog](packages/node/CHANGELOG.md)
 
 ```bash
@@ -73,6 +74,21 @@ npx apple-llm listen                          # the microphone, live
 
 Both packages compile one small Swift helper on first use and share the compiled
 binary, so installing both costs one compile, not two.
+
+## Integrate with an AI agent
+
+Give your coding agent this single reference:
+**[apple-llm/llms.txt](https://jagdishpal02000.github.io/apple-llm/llms.txt)**
+([source](llms.txt)). It covers setup, local LLM, TTS, STT, Node/Python SDKs,
+HTTP APIs, examples, and troubleshooting.
+
+> Read https://jagdishpal02000.github.io/apple-llm/llms.txt and integrate
+> apple-llm into this project for local LLM, text to speech, and speech to text.
+> Use the project's existing language, keep processing on device, and include
+> availability checks and setup instructions.
+
+The link is an agent-readable guide. Agents integrate through the SDK, CLI, or
+OpenAI-compatible server; an MCP host can wrap those APIs in its own adapter.
 
 ## Read this before you use it
 

@@ -9,6 +9,7 @@ program membership.
 [![GitHub stars](https://img.shields.io/github/stars/jagdishpal02000/apple-llm?style=social)](https://github.com/jagdishpal02000/apple-llm)
 
 [Website](https://jagdishpal02000.github.io/apple-llm/) ·
+[AI agent guide](https://jagdishpal02000.github.io/apple-llm/llms.txt) ·
 [GitHub](https://github.com/jagdishpal02000/apple-llm) ·
 [Issues](https://github.com/jagdishpal02000/apple-llm/issues)
 

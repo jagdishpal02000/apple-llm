@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'llms.txt'
       - 'site/**'
       - 'packages/node/package.json'
       - '.github/workflows/pages.yml'
