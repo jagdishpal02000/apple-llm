@@ -5,7 +5,7 @@
  * funnels into one private `execute`, so a feature added there reaches `text`,
  * `json`, `generate` and both streams at once.
  */
-import { probeCloud, CloudClient, CLOUD_CONTEXT_TOKENS, type CloudProbe } from './cloud.js';
+import { probeCloud, CloudClient, CLOUD_CONTEXT_TOKENS, cloudJsonInstruction, type CloudProbe } from './cloud.js';
 import type { OnProgress } from './compile.js';
 import {
   DeviceClient,
@@ -25,6 +25,7 @@ import {
 import {
   AppleLLMError,
   ModelUnavailableError,
+  QuotaError,
   SchemaValidationError,
   UnsupportedError,
 } from './errors.js';
@@ -70,6 +71,12 @@ export async function probe(onProgress?: OnProgress): Promise<ProbeResult> {
 
 export interface AppleLLMOptions {
   tier?: Tier;
+  /**
+   * With the cloud tier: answer on device instead when Private Cloud Compute
+   * turns a request away — Apple's per-device rate limit, or an exhausted
+   * quota. The result's `tier` says which model answered.
+   */
+  fallback?: 'device';
   /** Default instructions for every call; a per-call `system` replaces it. */
   system?: string;
   /** Default sampling temperature. See DEFAULT_TEMPERATURE — do not set 0. */
@@ -172,6 +179,17 @@ interface ExecuteMode {
   onDelta?: (delta: string) => void;
   onPartial?: (json: string) => void;
   signal?: AbortSignal;
+}
+
+/**
+ * The follow-up for a reply that failed validation. Every call starts a fresh
+ * session, so the model has to be shown what it said — told only that its
+ * previous answer was rejected, the cloud model answered in prose again.
+ */
+function repairFeedback(error: SchemaValidationError): string {
+  const problems = error.message.replace(/^The model's reply did not satisfy the schema: /, '').replace(/\.$/, '');
+  const previous = error.text.length > 2000 ? `${error.text.slice(0, 2000)}…` : error.text;
+  return `Your previous answer was:\n${previous}\n\nIt was rejected: ${problems}. Answer again, fixing those problems.`;
 }
 
 /** Combine abort signals; `undefined` when there are none. */
@@ -411,7 +429,7 @@ export class AppleLLM {
     ]);
     if (signal?.aborted === true) throw abortErrorFrom(signal);
 
-    const attempt = async (feedback?: string): Promise<GenerateResult<unknown>> => {
+    const attempt = async (tier: 'device' | 'cloud', feedback?: string): Promise<GenerateResult<unknown>> => {
       const promptText = feedback === undefined ? prompt : `${prompt}\n\n${feedback}`;
       let text: string;
       let finishReason: FinishReason = 'stop';
@@ -419,22 +437,15 @@ export class AppleLLM {
       let toolCalls: ToolCallRecord[] = [];
       let trimmedTurns = 0;
 
-      if (this.resolved === 'cloud') {
+      if (tier === 'cloud') {
         this.assertCloudCompatible({ ...options, images }, tools.builtIn.length + tools.functions.length > 0);
         let cloudPrompt = await withDocuments(promptText, options.documents);
         if (history.length > 0) {
           cloudPrompt = `Conversation so far:\n${renderHistory(history)}\n\nNew message from the user:\n${cloudPrompt}`;
         }
-        let cloudSystem = system;
-        if (mode.schema !== undefined) {
-          const instruction =
-            'Reply with a single JSON value matching this JSON Schema. ' +
-            'Output only the JSON, with no commentary and no code fence.\n\n' +
-            JSON.stringify(mode.schema.json, null, 2);
-          cloudSystem = cloudSystem ? `${cloudSystem}\n\n${instruction}` : instruction;
-        }
+        if (mode.schema !== undefined) cloudPrompt = `${cloudPrompt}\n\n${cloudJsonInstruction(mode.schema.json)}`;
         text = await this.cloud!.text({
-          system: cloudSystem,
+          system,
           prompt: cloudPrompt,
           webSearch: options.webSearch,
           signal,
@@ -478,8 +489,8 @@ export class AppleLLM {
 
       let object: unknown;
       if (mode.schema !== undefined && finishReason !== 'tool-calls') {
-        object = await this.parseObject(text, mode.schema);
-        if (this.resolved === 'cloud') mode.onPartial?.(JSON.stringify(object));
+        object = await this.parseObject(text, mode.schema, tier);
+        if (tier === 'cloud') mode.onPartial?.(JSON.stringify(object));
       }
       return {
         text,
@@ -488,7 +499,7 @@ export class AppleLLM {
         usage,
         toolCalls,
         trimmedTurns,
-        tier: this.resolved === 'cloud' ? 'cloud' : 'device',
+        tier,
         durationMs: Date.now() - started,
         message: {
           role: 'assistant',
@@ -500,22 +511,35 @@ export class AppleLLM {
       };
     };
 
+    const withRepair = async (tier: 'device' | 'cloud'): Promise<GenerateResult<unknown>> => {
+      try {
+        return await attempt(tier);
+      } catch (error) {
+        // One repair attempt for a reply that failed validation. Not while
+        // streaming on device, where the reader has already seen the first
+        // attempt's output; the cloud tier shows nothing until a reply parses.
+        if (!(error instanceof SchemaValidationError) || (mode.streaming === true && tier === 'device')) throw error;
+        return attempt(tier, repairFeedback(error));
+      }
+    };
+
+    const tier = this.resolved === 'cloud' ? 'cloud' : 'device';
     try {
-      return await attempt();
+      return await withRepair(tier);
     } catch (error) {
-      // One repair attempt for a reply that failed validation. Not while
-      // streaming: the reader has already seen the first attempt's output.
-      if (!(error instanceof SchemaValidationError) || mode.streaming === true) throw error;
-      return attempt(
-        `Your previous answer was rejected: ${error.message.replace(/^The model's reply did not satisfy the schema: /, '')}. ` +
-          'Answer again, fixing those problems.',
-      );
+      if (tier !== 'cloud' || this.options.fallback !== 'device' || !(error instanceof QuotaError)) throw error;
+      // Apple turned the cloud request away. Nothing has been emitted yet — the
+      // cloud tier delivers in one piece — so the device can answer cleanly.
+      this.device ??= this.newDevice();
+      await this.device.ensureReady().catch(() => {
+        throw error;
+      });
+      return withRepair('device');
     }
   }
 
   /** Parse, restore nulls, validate. Throws SchemaValidationError for anything the schema rejects. */
-  private async parseObject(text: string, schema: ResolvedSchema): Promise<unknown> {
-    const tier = this.resolved === 'cloud' ? 'cloud' : 'device';
+  private async parseObject(text: string, schema: ResolvedSchema, tier: 'device' | 'cloud'): Promise<unknown> {
     let value: unknown;
     try {
       value = tier === 'cloud' ? parseLlmJson(text) : JSON.parse(text);

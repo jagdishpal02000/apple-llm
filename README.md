@@ -40,11 +40,22 @@ with AppleLLM(tier="device") as llm:
     llm.json("Extract the fields", schema=Person)   # a pydantic model, validated back
 ```
 
-Or skip the SDK entirely: point any OpenAI client — the official SDKs,
-LangChain, Open WebUI, editor plugins — at the on-device model:
+Or skip the SDK entirely. From the shell:
 
 ```bash
-npx apple-llm serve   # OpenAI-compatible API at http://127.0.0.1:11436/v1, model "apple-on-device"
+npx apple-llm "What is the capital of Australia?"
+git diff | npx apple-llm "Write a commit message for this"   # piped text goes before the prompt
+```
+
+Or point any app at it. The server speaks both OpenAI's API — the official
+SDKs, LangChain, LlamaIndex, editor plugins — and **Ollama's**, which most Mac
+apps for local models use (Open WebUI, Enchanted, Msty, Page Assist, Continue,
+Zed, Obsidian plugins):
+
+```bash
+npx apple-llm serve                # OpenAI at http://127.0.0.1:11436/v1, model "apple-on-device"
+npx apple-llm serve --port 11434   # Ollama's port (with Ollama itself not running)
+ollama run apple-on-device "Hello" # even the Ollama CLI works against it
 ```
 
 Both packages compile one small Swift helper on first use and share the compiled
@@ -74,6 +85,22 @@ it is reached through a private Shortcuts action that Apple can change or remove
 in any OS release, and it has no constrained decoding, so `json()` there is a
 request rather than a guarantee.
 
+**The cloud tier is rate-limited per Mac.** Apple's Private Cloud Compute stops
+answering a Mac that calls it too often: ten calls in about two minutes tripped
+it here, and it then refused every call for LOCKOUT — while `probe()` still
+reported the quota as `belowLimit`, because this is a separate, short-term
+limiter that nothing can read in advance. A refused call raises `QuotaError`
+(HTTP 429 from the server). Use the cloud for the calls that need it rather
+than for batch jobs, and pass `fallback: 'device'` to have the on-device model
+answer when the cloud says no.
+
+**What 0.3 adds.** Fixes for the two ways the cloud tier failed — Apple's
+per-device rate limit surfaced as an opaque "Your request can't be completed
+right now", and cloud `json()` answered in prose — plus `fallback: 'device'`,
+an Ollama-compatible API on `apple-llm serve`, and a shell-friendly CLI
+(`apple-llm "question"`, piped input). Both packages; see the
+[CHANGELOG](packages/node/CHANGELOG.md).
+
 **What 0.2 adds (npm package).** Function tools executed in your process,
 Zod/Standard Schema structured output, `for await` streaming of text and of
 partial objects, message-list conversations with automatic trimming,
@@ -95,7 +122,7 @@ and keeps working unchanged; it does not expose these features yet.
 | JSON | **guaranteed** by constrained decoding | asked for in the prompt, recovered from prose |
 | Privacy | nothing leaves the machine | **your prompt leaves the machine** |
 | Setup | none | one-time `apple-llm setup-cloud` |
-| Limits | none | quota'd |
+| Limits | none | a per-Mac rate limit and a quota ([above](#read-this-before-you-use-it)) |
 | Vision | yes (macOS 27) | yes (macOS 27 Golden Gate), passed as a Shortcuts input |
 | Reasoning | **no** (the model says so) | yes |
 | Web search | no | optional `WFAllowWebSearch` — answers about last month's news, correctly |
@@ -298,6 +325,9 @@ from apple_llm import AppleLLM, AsyncAppleLLM, probe
 
 probe()
 
+with AppleLLM(tier="cloud", fallback="device") as llm:   # on device when the cloud says no
+    llm.text("...")
+
 with AppleLLM(tier="auto", use_case="contentTagging") as llm:
     llm.text("...", system=..., temperature=..., images=[...], sampling=...)
     llm.stream("...", on_delta=print)
@@ -323,18 +353,22 @@ schemas need no extras.
 Typed, so you branch on a class rather than matching a message:
 `ModelUnavailableError` (with `reason` distinguishing
 `appleIntelligenceNotEnabled` / `modelNotReady` / `deviceNotEligible`),
-`SchemaRejectedError`, `ContextLengthError`, `QuotaError` (with `resetDate`
-where Apple provides one), `TimeoutError`, `SetupRequiredError`, `RefusalError`.
+`SchemaRejectedError`, `ContextLengthError`, `QuotaError` (Apple's cloud rate
+limit or quota, with `resetDate` where Apple provides one), `TimeoutError`,
+`SetupRequiredError`, `RefusalError`.
 
 ### CLI
 
 Both packages install the same one:
 
 ```bash
+apple-llm "What is the capital of Australia?"             # short for run
+git diff | apple-llm "Write a commit message for this"    # piped text goes before the prompt
 apple-llm probe
 apple-llm setup-cloud [--web-search]
 apple-llm chat                                            # interactive (npm)
-apple-llm serve                                           # OpenAI-compatible API (npm)
+apple-llm serve [--port 11434]                            # OpenAI- and Ollama-compatible API (npm)
+apple-llm run --tier cloud --fallback device "…"          # on device when the cloud says no
 apple-llm run --tier device --system "You are terse." -   # prompt on stdin
 apple-llm run --tier cloud --schema schema.json "Extract the fields"
 apple-llm run --image photo.png "What is in this image?"

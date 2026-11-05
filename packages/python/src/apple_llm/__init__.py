@@ -14,13 +14,14 @@ macOS 26+ on Apple Silicon only. No API key, no account, no developer program.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 from ._cloud import (
     CLOUD_CONTEXT_TOKENS,
     CLOUD_SHORTCUT_NAME,
     CLOUD_SHORTCUT_NAME_WEB,
     CloudClient,
+    cloud_json_instruction,
     cloud_setup_hint,
     install_cloud_shortcut,
     probe_cloud,
@@ -50,6 +51,7 @@ from ._errors import (
     QuotaError,
     RefusalError,
     SchemaRejectedError,
+    SchemaValidationError,
     SetupRequiredError,
     TimeoutError,
 )
@@ -57,7 +59,9 @@ from ._json_recovery import extract_json_span, parse_llm_json, strip_code_fences
 from ._schema import JsonSchema, to_apple_schema
 from ._target import host_target, is_apple_silicon_mac, target_triple_from
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
+
+T = TypeVar("T")
 
 __all__ = [
     "AppleLLM",
@@ -72,6 +76,7 @@ __all__ = [
     "probe_cloud",
     "install_cloud_shortcut",
     "shortcut_definition",
+    "cloud_json_instruction",
     "cloud_setup_hint",
     "to_apple_schema",
     "parse_llm_json",
@@ -90,6 +95,7 @@ __all__ = [
     "AppleLLMError",
     "ModelUnavailableError",
     "SchemaRejectedError",
+    "SchemaValidationError",
     "ContextLengthError",
     "QuotaError",
     "TimeoutError",
@@ -155,12 +161,17 @@ class AppleLLM:
     ``tier`` is ``"device"``, ``"cloud"`` or ``"auto"``. ``auto`` means on-device
     when available, else cloud when the shortcut is installed, else an error
     naming the setup step.
+
+    ``fallback="device"`` makes the cloud tier answer on device instead when
+    Private Cloud Compute turns a request away -- Apple's per-device rate limit,
+    or an exhausted quota.
     """
 
     def __init__(
         self,
         tier: str = "auto",
         *,
+        fallback: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         on_progress: Optional[ProgressCallback] = None,
@@ -170,7 +181,10 @@ class AppleLLM:
     ) -> None:
         if tier not in ("device", "cloud", "auto"):
             raise ValueError(f'tier must be "device", "cloud" or "auto", not {tier!r}')
+        if fallback not in (None, "device"):
+            raise ValueError(f'fallback must be "device" or None, not {fallback!r}')
         self.tier = tier
+        self._fallback = fallback
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._on_progress = on_progress
@@ -256,7 +270,7 @@ class AppleLLM:
         }
 
     def _assert_device_only(self, *, images: Any = None, session_id: Any = None,
-                            tools: Any = None, documents: Any = None) -> None:
+                            tools: Any = None) -> None:
         if self._resolved == "cloud":
             if images:
                 raise AppleLLMError("images needs the on-device tier.", "cloud")
@@ -264,8 +278,21 @@ class AppleLLM:
                 raise AppleLLMError("session_id needs the on-device tier.", "cloud")
             if tools:
                 raise AppleLLMError("tools needs the on-device tier.", "cloud")
-            if documents:
-                raise AppleLLMError("documents needs the on-device tier.", "cloud")
+
+    def _on_cloud(self, cloud_call: Callable[[], T], device_call: Callable[[DeviceClient], T]) -> T:
+        """Run a cloud call; with ``fallback="device"``, answer on device when
+        Private Cloud Compute turns the request away."""
+        try:
+            return cloud_call()
+        except QuotaError as error:
+            if self._fallback != "device":
+                raise
+            self._device = self._device or DeviceClient(self._use_case, self._guardrails)
+            try:
+                self._device.ensure_ready()
+            except AppleLLMError:
+                raise error from None
+            return device_call(self._device)
 
     def text(
         self,
@@ -284,19 +311,20 @@ class AppleLLM:
         sampling: Optional[dict[str, Any]] = None,
     ) -> str:
         self.ensure_ready()
-        if self._resolved == "cloud":
-            self._assert_device_only(images=images, session_id=session_id,
-                                     tools=tools, documents=documents)
-            return self._cloud.text(prompt, system=system, web_search=web_search)  # type: ignore[union-attr]
-        return self._device.text(  # type: ignore[union-attr]
-            prompt,
-            system=system,
-            **self._device_kwargs(
-                temperature=temperature, max_tokens=max_tokens, images=images,
-                documents=documents, session_id=session_id, tools=tools,
-                use_case=use_case, guardrails=guardrails, sampling=sampling,
-            ),
+        device_kwargs = self._device_kwargs(
+            temperature=temperature, max_tokens=max_tokens, images=images,
+            documents=documents, session_id=session_id, tools=tools,
+            use_case=use_case, guardrails=guardrails, sampling=sampling,
         )
+        if self._resolved == "cloud":
+            self._assert_device_only(images=images, session_id=session_id, tools=tools)
+            return self._on_cloud(
+                lambda: self._cloud.text(  # type: ignore[union-attr]
+                    with_documents(prompt, documents), system=system, web_search=web_search
+                ),
+                lambda device: device.text(prompt, system=system, **device_kwargs),
+            )
+        return self._device.text(prompt, system=system, **device_kwargs)  # type: ignore[union-attr]
 
     def stream(
         self,
@@ -306,6 +334,7 @@ class AppleLLM:
         system: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        web_search: bool = False,
         images: Optional[list] = None,
         documents: Optional[list[str]] = None,
         session_id: Optional[str] = None,
@@ -314,23 +343,35 @@ class AppleLLM:
         guardrails: Optional[Guardrails] = None,
         sampling: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Streaming text (device tier only).
+        """Streaming text.
 
         Deltas arrive via ``on_delta`` as the model generates; the return value
-        is the full text.
+        is the full text. On the cloud tier the reply arrives as one delta:
+        Shortcuts is not incremental.
         """
         self.ensure_ready()
-        if self._resolved != "device":
-            raise AppleLLMError("stream needs the on-device tier.", "cloud")
+        device_kwargs = self._device_kwargs(
+            temperature=temperature, max_tokens=max_tokens, images=images,
+            documents=documents, session_id=session_id, tools=tools,
+            use_case=use_case, guardrails=guardrails, sampling=sampling,
+        )
+        if self._resolved == "cloud":
+            self._assert_device_only(images=images, session_id=session_id, tools=tools)
+
+            def whole() -> str:
+                reply = self._cloud.text(  # type: ignore[union-attr]
+                    with_documents(prompt, documents), system=system, web_search=web_search
+                )
+                if on_delta is not None:
+                    on_delta(reply)
+                return reply
+
+            return self._on_cloud(
+                whole,
+                lambda device: device.stream(prompt, on_delta=on_delta, system=system, **device_kwargs),
+            )
         return self._device.stream(  # type: ignore[union-attr]
-            prompt,
-            on_delta=on_delta,
-            system=system,
-            **self._device_kwargs(
-                temperature=temperature, max_tokens=max_tokens, images=images,
-                documents=documents, session_id=session_id, tools=tools,
-                use_case=use_case, guardrails=guardrails, sampling=sampling,
-            ),
+            prompt, on_delta=on_delta, system=system, **device_kwargs
         )
 
     def history(self, session_id: str) -> dict[str, Any]:
@@ -453,22 +494,23 @@ class AppleLLM:
         """
         json_schema, model = _schema_of(schema)
         self.ensure_ready()
+        device_kwargs = self._device_kwargs(
+            temperature=temperature, max_tokens=max_tokens, images=images,
+            documents=documents, session_id=session_id, tools=tools,
+            use_case=use_case, guardrails=guardrails, sampling=sampling,
+        )
         if self._resolved == "cloud":
-            self._assert_device_only(images=images, session_id=session_id,
-                                     tools=tools, documents=documents)
-            result = self._cloud.json(  # type: ignore[union-attr]
-                prompt, schema=json_schema, system=system, web_search=web_search
+            self._assert_device_only(images=images, session_id=session_id, tools=tools)
+            result = self._on_cloud(
+                lambda: self._cloud.json(  # type: ignore[union-attr]
+                    with_documents(prompt, documents), schema=json_schema, system=system,
+                    web_search=web_search,
+                ),
+                lambda device: device.json(prompt, schema=json_schema, system=system, **device_kwargs),
             )
         else:
             result = self._device.json(  # type: ignore[union-attr]
-                prompt,
-                schema=json_schema,
-                system=system,
-                **self._device_kwargs(
-                    temperature=temperature, max_tokens=max_tokens, images=images,
-                    documents=documents, session_id=session_id, tools=tools,
-                    use_case=use_case, guardrails=guardrails, sampling=sampling,
-                ),
+                prompt, schema=json_schema, system=system, **device_kwargs
             )
         return model.model_validate(result) if model is not None else result
 

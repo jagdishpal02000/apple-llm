@@ -192,7 +192,7 @@ const onCloud = LIVE && LIVE_CLOUD ? describe : describe.skip;
 onCloud('live: private cloud compute (consumes quota)', () => {
   it('completes one round trip', async () => {
     const result = await probe();
-    if (!result.cloud.available) return;
+    expect(result.cloud.available, result.cloud.reason).toBe(true);
     const llm = new AppleLLM({ tier: 'cloud' });
     try {
       const out = await llm.text('Reply with the single word: pong');

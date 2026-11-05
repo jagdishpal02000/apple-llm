@@ -30,8 +30,10 @@ seconds, once, with the Xcode Command Line Tools) and stays warm between calls.
 - **Everything an LLM SDK should have** — streaming (`for await`), structured
   output typed by Zod, tool calling with your own JavaScript functions,
   multi-turn chat, cancellation, timeouts, token counting, usage.
-- **Three ways in** — this library, an [OpenAI-compatible server](#openai-compatible-server)
-  for any tool that speaks OpenAI, and a [Vercel AI SDK provider](#vercel-ai-sdk).
+- **Four ways in** — this library; a [server](#openai-and-ollama-compatible-server)
+  that speaks both OpenAI's API and Ollama's, so apps built for either use
+  Apple's model with no code; a [Vercel AI SDK provider](#vercel-ai-sdk); and
+  the [shell](#cli): `git diff | npx apple-llm "Write a commit message for this"`.
 - **Two tiers** — on-device (private, fast, free) and Apple's big server
   model on Private Cloud Compute — on macOS 27 Golden Gate, the one Siri AI is
   built on: reasoning, images, live web knowledge, 32k context. Free, no key,
@@ -203,11 +205,23 @@ and with `webSearch` answers questions about last month's news correctly. It
 costs no API key and no money, only Apple's per-device quota
 (`probe().cloud.quota`), and your prompt leaves the Mac.
 
-## OpenAI-compatible server
+**Apple rate-limits it per Mac**, separately from that quota and invisibly to
+`probe()`: ten calls in about two minutes tripped the limit here, and every call
+was then refused for LOCKOUT. A refused call is a `QuotaError` (HTTP 429 from
+the server). Use the cloud for the calls that need it, not for batch jobs, and
+let the device answer when it says no:
+
+```ts
+const cloud = new AppleLLM({ tier: 'cloud', fallback: 'device' });
+const { text, tier } = await cloud.generate(prompt); // tier: 'device' when the cloud said no
+```
+
+## OpenAI- and Ollama-compatible server
 
 ```bash
 npx apple-llm serve
-# apple-llm serving an OpenAI-compatible API at http://127.0.0.1:11436/v1
+#   OpenAI: http://127.0.0.1:11436/v1
+#   Ollama: http://127.0.0.1:11436
 ```
 
 Point any OpenAI client at it — the official SDKs, LangChain, LlamaIndex,
@@ -225,6 +239,25 @@ a JSON Schema (guaranteed on device), images as data or http URLs, `seed` and
 `--cors <origin>`, can require `--api-key`, and serves the on-device model
 unless a client asks for `apple-private-cloud` by name. Or from code:
 `import { serve } from 'apple-llm/server'`.
+
+### Ollama apps
+
+Most Mac apps for local models — Open WebUI, Enchanted, Msty, Page Assist,
+Continue, Zed, Obsidian plugins — speak Ollama's API. The same server answers
+it, so they can use Apple's model with no code. Start it on Ollama's port (with
+Ollama itself not running) and pick `apple-on-device` in the app:
+
+```bash
+npx apple-llm serve --port 11434
+ollama run apple-on-device "Why is the sky blue?"   # even the Ollama CLI works against it
+```
+
+`/api/chat` and `/api/generate` stream NDJSON unless `stream: false`, as in
+Ollama, and take `format` (`"json"`, or a JSON Schema — guaranteed on device),
+tools, images and `options` (`temperature`, `num_predict`, `seed`, `top_p`).
+`/api/tags`, `/api/show` (context length and capabilities), `/api/ps` and
+`/api/version` answer the discovery calls apps make first. Embeddings are not
+served: Apple's models do not produce them.
 
 ## Vercel AI SDK
 
@@ -247,6 +280,9 @@ settings go in `providerOptions: { apple: { useCase, guardrails, builtInTools } 
 ## CLI
 
 ```bash
+apple-llm "What is the capital of Australia?"   # one completion (short for run)
+git diff | apple-llm "Write a commit message"   # piped text goes in before the prompt
+cat error.log | apple-llm "What went wrong?"
 apple-llm chat                                  # interactive, streamed; Ctrl+C stops a reply
 apple-llm run "Summarize: …"                    # one completion; "-" reads stdin
 apple-llm run --json "…"                        # text + usage + tool calls as JSON
@@ -254,7 +290,7 @@ apple-llm run --schema person.json "Ada, 1815"  # guaranteed JSON
 apple-llm run --schema person.json --stream "…" # partial objects, one per line
 apple-llm run --image photo.png "What is this?"
 apple-llm run --tool ocr --image receipt.png "Read the total."
-apple-llm serve [--port 11436] [--api-key k]    # OpenAI-compatible API
+apple-llm serve [--port 11436] [--api-key k]    # OpenAI- and Ollama-compatible API
 apple-llm count --system "…" -                  # tokens before sending
 apple-llm probe                                 # what this machine can do
 apple-llm setup-cloud                           # one-time, for the cloud tier
@@ -290,7 +326,7 @@ text across runs, without the degeneration.
 | Web knowledge | no | yes, with `webSearch` |
 | Your tools, sessions | yes | no |
 | Setup | none | `apple-llm setup-cloud`, once |
-| Limits | none | Apple's quota (read before calling: `probe().cloud.quota`) |
+| Limits | none | a per-Mac rate limit, and a quota (`probe().cloud.quota`) |
 
 ## Errors
 
@@ -304,7 +340,7 @@ Every error is an `AppleLLMError` with a stable `code`, and a class to branch on
 | `SchemaValidationError` | the reply failed your schema's validation (`.issues`, `.text`) |
 | `ToolExecutionError` | your tool threw (`.toolName`, `.cause`) |
 | `AbortError` / `TimeoutError` | your signal fired / the deadline passed |
-| `QuotaError` | rate limited (`.resetDate` when Apple gives one) |
+| `QuotaError` | Apple's cloud rate limit or quota (`.resetDate` when Apple gives one); `fallback: 'device'` answers on device instead |
 | `RefusalError` | the model's guardrails declined |
 | `ModelBusyError` | other processes are using the model; already retried with backoff |
 | `SetupRequiredError`, `UnsupportedError` | a setup step is missing / the tier cannot do that |

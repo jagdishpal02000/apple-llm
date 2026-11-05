@@ -108,40 +108,216 @@ for (const box of $$('[data-tabs]')) {
   })
 }
 
-// ── terminal: replay the session as if typed ──────────────
+// ── terminal: replay once, then interactive demo ────────────
 {
   const pre = $('[data-term]')
-  if (pre && !reduceMotion) {
-    const lines = pre.innerHTML.split('\n')
+  if (pre) {
+    const figure = pre.closest('figure')
+    const PROMPT = '<span class="t-p">$</span> '
+    const PROMPT_TEXT = '$ '
+    const originalHTML = pre.innerHTML
+    const lines = originalHTML.split('\n')
+    const decode = (html) => Object.assign(document.createElement('textarea'), { innerHTML: html }).value
+    let skip = false
+    let live = false
+    if (figure) {
+      figure.style.cursor = 'text'
+      figure.addEventListener('click', (e) => {
+        skip = true
+        const ed = pre.querySelector('.t-row:last-child .t-edit, .t-row .t-edit:last-of-type')
+        if (live && ed && e.target !== ed) ed.focus({ preventScroll: true })
+      })
+    }
+
     pre.style.minHeight = `${pre.offsetHeight}px`
     pre.textContent = ''
-    pre.dataset.ready = ''
     const cursor = Object.assign(document.createElement('span'), { className: 't-cursor' })
     pre.append(cursor)
-    const decode = (html) => Object.assign(document.createElement('textarea'), { innerHTML: html }).value
-    const PROMPT = '<span class="t-p">$</span> '
+    pre.dataset.ready = ''
+
+    const PROBE_OUT = `<span class="t-h">on-device</span>\n  variant     AFM 3 Core Advanced\n  context     8192 tokens\n  supports    guidedGeneration, toolCalling, vision\n  use cases   general, contentTagging\n\n<span class="t-h">cloud (private cloud compute)</span>\n  quota       belowLimit\n\n`
+    const RUN_OUT = `<span class="t-o">{"tags": ["sourdough", "rye starter", "cast iron", "dutch oven", "recipe"]}</span>\n\n`
+    const COUNT_OUT = `<span class="t-o">64 tokens of 8192 (1%)</span>\n`
+    const HELP_OUT = `Try one of these + Enter:\n  apple-llm probe\n  apple-llm run --use-case contentTagging --schema tags.json "A recipe for sourdough…"\n  apple-llm count --system "You are terse." "The quick brown fox…"\n  apple-llm chat   (basic chat demo, 'exit' quits)\n  clear\n`
+    const CHAT_PROMPT = '<span class="t-you">you:</span> '
+    const CHAT_PROMPT_TEXT = 'you: '
+    const CHAT_INTRO = `Interactive chat (demo, canned replies). 'exit' quits.\n`
+    let inChat = false
+
+    const chatReply = (raw) => {
+      const msg = raw.trim().toLowerCase()
+      if (!msg) return ''
+      if (/^(exit|quit|\/exit|bye|goodbye)$/.test(msg)) return '__EXIT__'
+      if (/^(clear|cls)$/.test(msg)) return '__CLEAR__'
+      if (/\b(hi|hello|hey|yo|namaste)\b/.test(msg))
+        return `Hello! I'm the on-device model, running free on this Mac - no API key, no cloud.\nAsk me to tag or rewrite something.\n`
+      if (/(who|what) are you|your name|which model/.test(msg))
+        return `I'm AFM 3 Core Advanced, Apple's ~20B sparse on-device model (1-4B active).\nFast and private; honest about limits - I don't write code.\n`
+      if (/\b(tag|classify|categor)\b/.test(msg))
+        return `Sure - on device I'd stream tags back as guaranteed JSON, e.g.\n{"tags": ["demo", "on-device", "free"]}\n`
+      if (/\b(rewrite|proofread|summar)/.test(msg))
+        return `Paste it after the real thing with: apple-llm rewrite "gonna grab a bite"\nOn device, nothing leaves your Mac.\n`
+      if (/\b(cloud|bigger|reason|code)\b/.test(msg))
+        return `For that I'd use the cloud tier (Siri AI's server model, 32k context):\napple-llm run --tier cloud "Solve this step by step: ..."\n`
+      if (/\b(thank|thanks|great|cool|nice)\b/.test(msg))
+        return `Anytime. Star the repo if the demo saved you an API bill.\n`
+      const fallbacks = [
+        `On your Mac I'd answer that in ~1s, privately on device.\nThis demo is canned - try 'exit', then apple-llm probe.\n`,
+        `Good question for the device tier: short, concrete, no long reasoning needed.\nThe real chat streams it live. Try another, or 'exit'.\n`,
+      ]
+      chatReply.n = ((chatReply.n || 0) + 1) % fallbacks.length
+      return fallbacks[chatReply.n]
+    }
+
+    const isChatCmd = (raw) => {
+      const cmd = raw.trim().replace(/\s+/g, ' ')
+      return cmd === 'chat' || cmd === 'apple-llm chat' || /^apple-llm chat(\s|$)/.test(cmd)
+    }
+
+    const demoOutput = (raw) => {
+      const cmd = raw.trim().replace(/\s+/g, ' ')
+      if (!cmd) return ''
+      if (/^(help|apple-llm help|--help)$/.test(cmd)) return HELP_OUT
+      if (/^(clear|apple-llm clear)$/.test(cmd)) return '__CLEAR__'
+      if (cmd === 'apple-llm probe' || cmd === 'probe' || /(^|\s)probe(\s|$)/.test(` ${cmd} `)) return PROBE_OUT
+      if (/\bcount\b/.test(cmd)) return COUNT_OUT
+      if (/\brun\b/.test(cmd)) return RUN_OUT
+      if (/^(npm install|pip install|npx apple-llm|apple-llm setup-cloud)/.test(cmd))
+        return `This demo runs in your browser - nothing to install here.\nTry: apple-llm probe\n`
+      return `zsh: command not found: ${cmd.split(' ')[0]}\nTry 'help' for demo commands.\n`
+    }
+
+    const history = []
+    const printHTML = (html, before) => {
+      const out = document.createElement('span')
+      out.innerHTML = html
+      const anchor = before || (cursor.isConnected ? cursor : null)
+      pre.insertBefore(out, anchor)
+    }
+    const echoLine = (raw, row, chat) => {
+      const echo = document.createElement('span')
+      echo.textContent = `${chat ? CHAT_PROMPT_TEXT : PROMPT_TEXT}${raw}\n`
+      echo.innerHTML = echo.innerHTML.replace(chat ? /^you: / : /^\$ /, chat ? CHAT_PROMPT : PROMPT)
+      row.replaceWith(echo)
+      return echo
+    }
+    const newPromptRow = (chat) => {
+      const row = document.createElement('span')
+      row.className = 't-row'
+      row.innerHTML = chat ? CHAT_PROMPT : PROMPT
+      const input = document.createElement('input')
+      input.className = 't-edit'
+      input.setAttribute('aria-label', chat ? 'Demo chat. Type a message, exit quits.' : 'Demo terminal. Type help and press Enter.')
+      input.setAttribute('autocomplete', 'off')
+      input.setAttribute('autocapitalize', 'off')
+      input.setAttribute('spellcheck', 'false')
+      input.setAttribute('enterkeyhint', chat ? 'send' : 'enter')
+      input.dataset.h = ''
+      input.dataset.chat = chat ? '1' : ''
+      row.append(input)
+      return { row, input }
+    }
+
+    // Single delegated handler for every prompt row, present and future
+    pre.addEventListener('keydown', async (e) => {
+      const active = e.target
+      if (!active || !active.classList || !active.classList.contains('t-edit')) return
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (!history.length) return
+        const idx = active.dataset.h === '' ? history.length - 1 : Math.max(0, Number(active.dataset.h) - 1)
+        active.dataset.h = String(idx)
+        active.value = history[idx]
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (active.dataset.h === '') return
+        const idx = Number(active.dataset.h) + 1
+        if (idx >= history.length) { active.value = ''; active.dataset.h = '' }
+        else { active.value = history[idx]; active.dataset.h = String(idx) }
+        return
+      }
+      if (e.key !== 'Enter') return
+      e.preventDefault()
+      const raw = active.value
+      const cur = active.closest('.t-row')
+      const chat = inChat
+      const echo = echoLine(raw, cur, chat)
+      active.disabled = true
+      if (raw.trim()) history.push(raw)
+      if (chat) {
+        const reply = chatReply(raw)
+        if (reply === '__EXIT__') {
+          inChat = false
+          printHTML(`Back to zsh - try 'help'.\n`)
+        } else if (reply === '__CLEAR__') {
+          pre.textContent = ''
+          pre.append(echo)
+        } else if (reply) {
+          if (!reduceMotion) await sleep(280 + Math.random() * 320)
+          printHTML(`<span class="t-o">apple:</span> ${reply}`)
+        }
+      } else if (isChatCmd(raw)) {
+        inChat = true
+        if (!reduceMotion) await sleep(250)
+        printHTML(CHAT_INTRO)
+      } else {
+        const out = demoOutput(raw)
+        if (out === '__CLEAR__') {
+          pre.textContent = ''
+          pre.append(echo)
+        } else if (out) {
+          if (!reduceMotion) await sleep(220 + Math.random() * 280)
+          printHTML(out)
+        }
+      }
+      const { row, input } = newPromptRow(inChat)
+      if (cursor.isConnected) cursor.remove()
+      pre.append(row)
+      input.focus({ preventScroll: true })
+    })
+
+    const goLive = () => {
+      if (live) return
+      live = true
+      if (cursor.isConnected) cursor.remove()
+      const { row } = newPromptRow()
+      pre.append(row)
+    }
 
     const play = async () => {
+      if (reduceMotion) {
+        pre.innerHTML = originalHTML
+        goLive()
+        return
+      }
       for (const [i, line] of lines.entries()) {
+        if (skip && i > 0) break
         const out = document.createElement('span')
         pre.insertBefore(out, cursor)
         if (line.startsWith(PROMPT)) {
-          await sleep(i === 0 ? 300 : 650)
+          if (!skip) await sleep(i === 0 ? 300 : 650)
           out.innerHTML = PROMPT
           for (const ch of decode(line.slice(PROMPT.length))) {
+            if (skip) break
             out.append(ch)
             await sleep(ch === ' ' ? 45 : 16 + Math.random() * 26)
           }
           out.append('\n')
-          await sleep(420)
+          if (!skip) await sleep(420)
         } else {
           out.innerHTML = `${line}\n`
-          await sleep(55)
+          if (!skip) await sleep(55)
         }
       }
-      const tail = document.createElement('span')
-      tail.innerHTML = PROMPT
-      pre.insertBefore(tail, cursor)
+      if (skip) {
+        // user clicked mid-replay: show the full transcript instantly
+        cursor.remove()
+        pre.innerHTML = originalHTML
+        pre.append(cursor)
+      }
+      goLive()
     }
 
     new IntersectionObserver((entries, observer) => {

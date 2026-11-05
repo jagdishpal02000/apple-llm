@@ -52,8 +52,9 @@
       <a href="#macos27">macOS 27</a>
       <a href="#cloud">Cloud</a>
       <a href="#compare">Compare</a>
-      <a href="#code">Code</a>
-      <a class="nav-gh" href="https://github.com/jagdishpal02000/apple-llm">GitHub <span class="stars" data-stars></span></a>
+      <a href="#code" class="nav-keep">Code</a>
+      <a href="#faq" class="nav-keep">FAQ</a>
+      <a class="nav-gh" href="https://github.com/jagdishpal02000/apple-llm">GitHub <span class="stars" data-stars>★ 10</span></a>
       <button class="theme" type="button" data-theme-toggle aria-label="Toggle colour theme"><span aria-hidden="true"></span></button>
     </nav>
   </div>
@@ -84,13 +85,20 @@
       </div>
 
       <div class="hero-links">
-        <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars></span></a>
+        <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars>★ 10</span></a>
         <a class="link" href="#code">See the code →</a>
       </div>
+      <p class="elig">M1–M4 only? Check in 5s: <code>npx apple-llm probe</code> — <a href="#faq">will it run on my Mac?</a></p>
+      <p class="badges">
+        <a href="https://www.npmjs.com/package/apple-llm"><img src="https://img.shields.io/npm/v/apple-llm?label=npm" alt="npm version" loading="lazy" width="88" height="20"></a>
+        <a href="https://www.npmjs.com/package/apple-llm"><img src="https://img.shields.io/npm/dw/apple-llm?label=weekly" alt="npm weekly downloads" loading="lazy" width="88" height="20"></a>
+        <a href="https://pypistats.org/packages/apple-llm"><img src="https://img.shields.io/pypi/dm/apple-llm?label=PyPI%20monthly" alt="PyPI monthly downloads" loading="lazy" width="110" height="20"></a>
+        <a href="https://github.com/jagdishpal02000/apple-llm/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" loading="lazy" width="88" height="20"></a>
+      </p>
     </div>
 
-    <figure class="term" aria-label="A terminal session running apple-llm probe, a tagging call and a token count">
-      <div class="term-top"><span></span><span></span><span></span><b>zsh — apple-llm</b></div>
+    <figure class="term" aria-label="Interactive demo terminal. Click inside, type help and press Enter.">
+      <div class="term-top"><span></span><span></span><span></span><b>zsh — apple-llm · live demo</b></div>
 <pre class="term-body" data-term><span class="t-p">$</span> apple-llm probe
 <span class="t-h">on-device</span>
   variant     AFM 3 Core Advanced
@@ -106,7 +114,7 @@
 
 <span class="t-p">$</span> apple-llm count --system "You are terse." "The quick brown fox…"
 <span class="t-o">64 tokens of 8192 (1%)</span></pre>
-      <figcaption>Real output from a Mac on macOS 27.</figcaption>
+      <figcaption>Real output from a Mac on macOS 27. Click above, type <code>help</code> + Enter — it runs in your browser.</figcaption>
     </figure>
   </div>
 
@@ -241,7 +249,6 @@ apple-llm run --tier cloud "Plan a 3-day Lisbon trip on a budget."</code></pre>
         <tr><th scope="row">OpenAI-compatible server</th><td class="us y">Yes</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
         <tr><th scope="row">Vercel AI SDK provider</th><td class="us y">Yes, v6 &amp; v7</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td><td class="n">No</td></tr>
         <tr><th scope="row">Runs other models (MLX)</th><td class="us n">No</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
-        <tr><th scope="row">Latest release</th><td class="us">Sep 2026</td><td>Jun 2026</td><td>Sep 2026</td><td>Aug 2025</td><td>Sep 2026</td></tr>
       </tbody>
     </table>
   </div>
@@ -455,10 +462,11 @@ apple-llm count --system "You are terse." -        # tokens before sending</code
 <section class="end wrap">
   <h2>Try it in <em>thirty seconds.</em></h2>
   <div class="end-cmds">
-<pre><code data-lang="sh">npm install apple-llm && npx apple-llm probe</code></pre>
+<pre><code data-lang="sh">npm install apple-llm && npx apple-llm probe
+# or: pip install apple-llm && apple-llm probe</code></pre>
   </div>
   <p>If it saves you an API bill, a star helps other Mac developers find it.</p>
-  <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars></span></a>
+  <a class="btn" href="https://github.com/jagdishpal02000/apple-llm">Star on GitHub <span class="stars" data-stars>★ 10</span></a>
 </section>
 
 </main>
@@ -474,7 +482,7 @@ apple-llm count --system "You are terse." -        # tokens before sending</code
       <a href="https://pypi.org/project/apple-llm/">PyPI</a>
       <a href="https://github.com/jagdishpal02000/apple-llm/issues">Issues</a>
     </nav>
-    <p class="fine">v%APPLE_LLM_VERSION% · MIT licensed. An independent project, not affiliated with or endorsed by Apple Inc. Apple, Apple Intelligence, macOS and Siri are trademarks of Apple Inc.</p>
+    <p class="fine">Built by <a href="https://www.linkedin.com/in/jagdishpal02000/">Jagdish Pal</a> · v%APPLE_LLM_VERSION% · MIT licensed. An independent project, not affiliated with or endorsed by Apple Inc. Apple, Apple Intelligence, macOS and Siri are trademarks of Apple Inc.</p>
   </div>
 </footer>
 </body>

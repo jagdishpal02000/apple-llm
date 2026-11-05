@@ -185,7 +185,9 @@ def _raise_for(response: dict[str, Any], raw: str) -> None:
         )
     if kind == "context":
         raise ContextLengthError(
-            f"The prompt exceeded the on-device context window: {detail}", "device",
+            f"The prompt exceeded the on-device context window: {detail}\n"
+            "Shorten it, or use the cloud tier's 32,768-token window (tier=\"cloud\", --tier cloud).",
+            "device",
             response.get("contextSize") if isinstance(response.get("contextSize"), int) else None,
         )
     if kind == "quota":

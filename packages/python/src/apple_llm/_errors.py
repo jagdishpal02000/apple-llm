@@ -44,6 +44,18 @@ class SchemaRejectedError(AppleLLMError):
     dialect rule. See ``_schema.py``."""
 
 
+class SchemaValidationError(AppleLLMError, ValueError):
+    """The cloud model's reply held no JSON, even after one repair attempt.
+
+    ``text`` is what the model actually said. Also a ``ValueError``, which is
+    what this raised before it had a name.
+    """
+
+    def __init__(self, message: str, text: str, tier: Optional[Tier] = None) -> None:
+        super().__init__(message, tier)
+        self.text = text
+
+
 class ContextLengthError(AppleLLMError):
     def __init__(
         self, message: str, tier: Optional[Tier] = None, context_size: Optional[int] = None

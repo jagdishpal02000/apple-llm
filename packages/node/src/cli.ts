@@ -9,6 +9,7 @@
  *   apple-llm chat                                     # interactive
  *   apple-llm serve                                    # OpenAI-compatible API
  */
+import { fstatSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { AppleLLM, captureScreenshot, parseImageFlag, probe } from './index.js';
 import { installCloudShortcut } from './cloud.js';
@@ -18,6 +19,7 @@ import { DEFAULT_PORT, serve } from './server.js';
 
 interface Flags {
   tier?: string;
+  fallback?: string;
   system?: string;
   schema?: string;
   temperature?: string;
@@ -56,6 +58,7 @@ function parseArgs(argv: string[]): Flags {
     };
     switch (arg) {
       case '--tier': flags.tier = take('--tier'); break;
+      case '--fallback': flags.fallback = take('--fallback'); break;
       case '--system': flags.system = take('--system'); break;
       case '--schema': flags.schema = take('--schema'); break;
       case '--temperature': flags.temperature = take('--temperature'); break;
@@ -90,6 +93,30 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * Text piped in beside a prompt — `cat notes.md | apple-llm run "Summarize
+ * this"` — or undefined. Only a pipe or a redirected file is read: a terminal
+ * is interactive, and a socket (how Node spawns children) may never close.
+ */
+async function pipedInput(): Promise<string | undefined> {
+  let stat;
+  try {
+    stat = fstatSync(0);
+  } catch {
+    return undefined;
+  }
+  if (!stat.isFIFO() && !stat.isFile()) return undefined;
+  const text = await readStdin();
+  return text.trim() === '' ? undefined : text;
+}
+
+/** With text piped in, the prompt says what to do with it — after it, as people read it. */
+async function promptFrom(arg: string): Promise<string> {
+  if (arg === '-') return readStdin();
+  const piped = await pipedInput();
+  return piped === undefined ? arg : `${piped.trimEnd()}\n\n${arg}`;
+}
+
 const KNOWN_TOOLS = new Set(['ocr', 'barcode', 'spotlight']);
 
 function parseTools(values: string[], usageError: (m: string) => number): string[] | undefined {
@@ -108,19 +135,25 @@ function parseTools(values: string[], usageError: (m: string) => number): string
 
 const USAGE = `apple-llm — Apple's on-device and Private Cloud Compute models
 
+  apple-llm "<prompt>"                   one completion (short for run)
   apple-llm probe                        what this machine can do
   apple-llm setup-cloud [--web-search]   install the Shortcut the cloud tier needs
   apple-llm run [options] <prompt|->     one completion ("-" reads stdin)
   apple-llm chat [options]               interactive conversation, streamed
-  apple-llm serve [options]              OpenAI-compatible API on localhost
+  apple-llm serve [options]              OpenAI- and Ollama-compatible API on localhost
   apple-llm count [options] <prompt|->   tokens this prompt costs, before sending
   apple-llm ask-screen [options] <question|->   screenshot, then ask (device tier)
   apple-llm history --session <id>       show a conversation's mirrored turns
   apple-llm reset [--session <id>]       drop one conversation, or all
   apple-llm rewrite|proofread|summarize|draft <text|->   Write with Siri presets
 
+  Text piped into run goes in before the prompt:
+    cat notes.md | apple-llm "Summarize this"
+    git diff | apple-llm "Write a commit message for this"
+
 run options:
   --tier device|cloud|auto   default: auto
+  --fallback device          cloud tier: answer on device when Apple rate-limits the cloud
   --system <text>            system instructions
   --schema <file.json>       ask for JSON matching this JSON Schema
   --temperature <n>          default 0.4 (0 degenerates; see the README)
@@ -129,7 +162,7 @@ run options:
   --document <path>          inline a text document into the prompt (repeatable)
   --tool ocr|barcode|spotlight   built-in on-device tool (repeatable)
   --session <id>             continue a named conversation across calls
-  --stream                   print partials as they arrive (device text only)
+  --stream                   print text as it arrives (the cloud tier sends it whole)
   --use-case contentTagging  Apple's tagging-specialised model
   --guardrails permissive    relax guardrails for rewriting tasks
   --seed <n>                 reproducible sampling (top-k, seeded)
@@ -139,7 +172,7 @@ run options:
   --json                     print the full result: text, usage, tool calls
                              (with --schema --stream: one partial object per line)
 
-chat options: --tier, --system, --tool, --use-case, --guardrails, --max-tokens.
+chat options: --tier, --fallback, --system, --tool, --use-case, --guardrails, --max-tokens.
   In the chat: /reset, /system <text>, /image <path>, /tokens, /help, /exit.
 
 serve options:
@@ -148,13 +181,25 @@ serve options:
   --api-key <key>            require "Authorization: Bearer <key>"
   --cors <origin>            allow browser clients from this origin
   --tier device|cloud|auto   for requests not naming a model; default device
+  --fallback device          answer apple-private-cloud requests on device when rate-limited
 
 ask-screen options: --mode interactive|window|fullscreen (default interactive),
   plus --system, --session, --max-tokens.
 `;
 
+const COMMANDS = new Set([
+  'probe', 'setup-cloud', 'run', 'chat', 'serve', 'count', 'ask-screen', 'history', 'reset',
+  'rewrite', 'proofread', 'summarize', 'draft', 'help',
+]);
+
 async function main(): Promise<number> {
-  const [command, ...rest] = process.argv.slice(2);
+  let [command, ...rest] = process.argv.slice(2);
+  // `apple-llm "What does this error mean?"` is a prompt, not a mistyped
+  // command: a command never contains a space, and a typo still errors.
+  if (command !== undefined && !COMMANDS.has(command) && /\s/.test(command)) {
+    rest = [command, ...rest];
+    command = 'run';
+  }
   let flags: Flags;
   try {
     flags = parseArgs(rest);
@@ -172,6 +217,10 @@ async function main(): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
+  if (flags.fallback !== undefined && flags.fallback !== 'device') {
+    return usageError(`--fallback must be device (got "${flags.fallback}").`);
+  }
+  const fallback = flags.fallback as 'device' | undefined;
 
   if (command === 'probe') {
     const result = await probe((p) => process.stderr.write(`  ${p.status}\n`));
@@ -341,16 +390,30 @@ async function main(): Promise<number> {
     if (flags.tier !== undefined && !['device', 'cloud', 'auto'].includes(flags.tier)) {
       return usageError(`--tier must be device, cloud, or auto (got "${flags.tier}").`);
     }
-    const running = await serve({
-      port,
-      host: flags.host,
-      apiKey: flags.apiKey,
-      cors: flags.cors,
-      tier: flags.tier as 'device' | 'cloud' | 'auto' | undefined,
-      log: (line) => process.stderr.write(`  ${line}\n`),
-    });
+    let running: Awaited<ReturnType<typeof serve>>;
+    try {
+      running = await serve({
+        port,
+        host: flags.host,
+        apiKey: flags.apiKey,
+        cors: flags.cors,
+        tier: flags.tier as 'device' | 'cloud' | 'auto' | undefined,
+        fallback,
+        log: (line) => process.stderr.write(`  ${line}\n`),
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
+      process.stderr.write(
+        `Port ${port} is already in use${port === 11434 ? ' — probably by Ollama itself; quit it first' : ''}.\n` +
+          'Pick another with --port <n>.\n',
+      );
+      return 1;
+    }
+    const root = running.url.replace(/\/v1$/, '');
     process.stderr.write(
-      `apple-llm serving an OpenAI-compatible API at ${running.url}\n` +
+      `apple-llm serving Apple's models\n` +
+        `  OpenAI: ${running.url}  (base URL for OpenAI SDKs, LangChain, Open WebUI, editor plugins)\n` +
+        `  Ollama: ${root}${port === 11434 ? '' : '  (--port 11434 for apps that only look on Ollama\'s port)'}\n` +
         `  models: apple-on-device${flags.tier === 'cloud' ? ' (default: apple-private-cloud)' : ''}, apple-private-cloud\n` +
         `  try:    curl ${running.url}/chat/completions -H 'content-type: application/json' ` +
         `-d '{"model":"apple-on-device","messages":[{"role":"user","content":"Hello"}]}'\n` +
@@ -381,6 +444,7 @@ async function main(): Promise<number> {
     const maxTokens = flags.maxTokens === undefined ? undefined : Number(flags.maxTokens);
     const llm = new AppleLLM({
       tier: (flags.tier ?? 'auto') as 'device' | 'cloud' | 'auto',
+      fallback,
       maxTokens,
       useCase: flags.useCase as 'general' | 'contentTagging' | undefined,
       guardrails: flags.guardrails as 'default' | 'permissive' | undefined,
@@ -424,7 +488,7 @@ async function main(): Promise<number> {
     if (flags.guardrails !== undefined && flags.guardrails !== 'default' && flags.guardrails !== 'permissive') {
       return usageError(`--guardrails must be default or permissive (got "${flags.guardrails}").`);
     }
-    const prompt = arg === '-' ? await readStdin() : arg;
+    const prompt = await promptFrom(arg);
     const tier = (flags.tier ?? 'auto') as 'device' | 'cloud' | 'auto';
     let tools: ('ocr' | 'barcode' | 'spotlight')[] | undefined;
     try {
@@ -440,6 +504,7 @@ async function main(): Promise<number> {
           : undefined;
     const llm = new AppleLLM({
       tier,
+      fallback,
       temperature,
       maxTokens,
       useCase: flags.useCase as 'general' | 'contentTagging' | undefined,

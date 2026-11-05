@@ -2,6 +2,7 @@
 
     apple-llm probe
     apple-llm setup-cloud [--web-search] [--force]
+    apple-llm "What does this error mean?" < error.log   # short for run
     apple-llm run --tier device --system "..." -      # prompt on stdin
     apple-llm run --tier cloud --schema s.json "Extract the fields"
 """
@@ -10,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import subprocess
 import sys
 from typing import Optional, Sequence
@@ -20,6 +23,32 @@ from ._cloud import install_cloud_shortcut
 from ._errors import AppleLLMError
 
 KNOWN_TOOLS = ("ocr", "barcode", "spotlight")
+
+_COMMANDS = {"probe", "setup-cloud", "run", "ask-screen", "history", "reset", "count",
+             "rewrite", "proofread", "summarize", "draft"}
+
+
+def _piped_input() -> Optional[str]:
+    """Text piped in beside a prompt -- ``cat notes.md | apple-llm run
+    "Summarize this"`` -- or None. Only a pipe or a redirected file is read: a
+    terminal is interactive, and other descriptors may never close."""
+    try:
+        mode = os.fstat(sys.stdin.fileno()).st_mode
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not (stat.S_ISFIFO(mode) or stat.S_ISREG(mode)):
+        return None
+    text = sys.stdin.read()
+    return text if text.strip() else None
+
+
+def _prompt_from(arg: str) -> str:
+    """With text piped in, the prompt says what to do with it -- after it, as
+    people read it."""
+    if arg == "-":
+        return sys.stdin.read()
+    piped = _piped_input()
+    return arg if piped is None else f"{piped.rstrip()}\n\n{arg}"
 
 
 def _parse_tools(values: list[str]) -> list[str] | None:
@@ -39,6 +68,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apple-llm",
         description="Apple's on-device and Private Cloud Compute models.",
+        epilog='apple-llm "<prompt>" is short for run. Text piped into run goes in before '
+               'the prompt: cat notes.md | apple-llm "Summarize this"',
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -53,6 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="one completion")
     run.add_argument("prompt", help='the prompt, or "-" to read stdin')
     run.add_argument("--tier", choices=("device", "cloud", "auto"), default="auto")
+    run.add_argument("--fallback", choices=("device",),
+                     help="cloud tier: answer on device when Apple rate-limits the cloud")
     run.add_argument("--system", help="system instructions")
     run.add_argument("--schema", help="JSON Schema file; ask for JSON matching it")
     run.add_argument("--temperature", type=float,
@@ -61,12 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--image", action="append", default=[],
                      help="attach an image as path or path::label (repeatable; macOS 27+, device tier)")
     run.add_argument("--document", action="append", default=[],
-                     help="inline a text document into the prompt (repeatable, device tier)")
+                     help="inline a text document into the prompt (repeatable)")
     run.add_argument("--tool", action="append", default=[],
                      help="built-in on-device tool: ocr, barcode, spotlight (repeatable)")
     run.add_argument("--session", help="continue a named conversation across calls")
     run.add_argument("--stream", action="store_true",
-                     help="print partials as they arrive (device text only)")
+                     help="print text as it arrives (the cloud tier sends it in one piece)")
     run.add_argument("--use-case", choices=("general", "contentTagging"),
                      help="contentTagging is Apple's tagging-specialised model")
     run.add_argument("--guardrails", choices=("default", "permissive"),
@@ -110,6 +143,11 @@ def _progress(status: str) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `apple-llm "What does this error mean?"` is a prompt, not a mistyped
+    # command: a command never contains a space, and a typo still errors.
+    if argv and argv[0] not in _COMMANDS and any(ch.isspace() for ch in argv[0]):
+        argv.insert(0, "run")
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -224,7 +262,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
         if args.command == "run":
-            prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
+            prompt = _prompt_from(args.prompt)
             sampling = None
             if args.greedy:
                 sampling = sampling_greedy()
@@ -239,11 +277,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print("error: --stream is text only; schemas need a complete response.",
                       file=sys.stderr)
                 return 2
-            if args.stream and args.tier == "cloud":
-                print("error: --stream needs the on-device tier.", file=sys.stderr)
-                return 2
             llm = AppleLLM(
                 args.tier,
+                fallback=args.fallback,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 use_case=args.use_case,

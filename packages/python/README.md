@@ -75,6 +75,11 @@ helper never outlives the interpreter.
   Compute, off your machine. Free but quota'd, reached through a private
   Shortcuts action Apple can change in any OS release, and with no constrained
   decoding — so `json()` there is a request, not a guarantee.
+- **The cloud tier is rate-limited per Mac**, separately from the quota and
+  invisibly to `probe()`: ten calls in about two minutes tripped it here, and
+  every call was then refused for LOCKOUT, as a `QuotaError`. Use it for the
+  calls that need it, not batch jobs, and let the device take over:
+  `AppleLLM(tier="cloud", fallback="device")`.
 - **Streaming is text-only, tools are Apple's built-ins.** `stream()` gives
   partials-as-they-arrive; `tools=["ocr", "barcode", "spotlight"]` enables
   on-device Vision/Spotlight tools. Generic user-supplied function calling is
@@ -172,7 +177,9 @@ with AppleLLM(guardrails="permissive") as llm:
 
 `ModelUnavailableError` (`.reason` is `appleIntelligenceNotEnabled` /
 `modelNotReady` / `deviceNotEligible` / …), `SchemaRejectedError`,
-`ContextLengthError`, `QuotaError` (`.reset_date`), `TimeoutError`,
+`SchemaValidationError` (a cloud reply with no JSON in it, after one repair;
+`.text` is what the model said), `ContextLengthError`, `QuotaError` (Apple's
+cloud rate limit or quota; `.reset_date` when Apple gives one), `TimeoutError`,
 `SetupRequiredError`, `RefusalError` — all subclasses of `AppleLLMError`.
 
 Note `apple_llm.TimeoutError` deliberately shadows the builtin name; import it
@@ -181,8 +188,11 @@ explicitly.
 ## CLI
 
 ```bash
+apple-llm "What is the capital of Australia?"   # short for run
+git diff | apple-llm "Write a commit message"   # piped text goes in before the prompt
 apple-llm probe
 apple-llm setup-cloud [--web-search]     # one-time, generates + signs locally
+apple-llm run --tier cloud --fallback device "…"   # on device when the cloud says no
 apple-llm run --tier device --system "You are terse." -
 apple-llm run --tier cloud --schema schema.json "Extract the fields"
 apple-llm run --image photo.png "What is in this image?"
@@ -202,11 +212,11 @@ apple-llm count --system "You are terse." -    # tokens before sending
 ## Schemas
 
 `json()` runs your schema through `to_apple_schema()`, which rewrites it into the
-restricted dialect Apple's `GenerationSchema` decoder accepts — eight rules
+restricted dialect Apple's `GenerationSchema` decoder accepts — nine rules
 covering unions, `x-order`, enums, titles, `$ref`-by-title, `additionalProperties`,
-string-typed `const`, and empty objects. Rule 8 exists because pydantic titles
-every property and Apple rejects a titled string. See the
-[full notes in the repo](https://github.com/jagdish/apple-llm#the-generationschema-dialect).
+string-typed `const`, empty objects and `pattern`. Rule 8 exists because
+pydantic titles every property and Apple rejects a titled string. See the
+[full notes in the repo](https://github.com/jagdishpal02000/apple-llm#the-generationschema-dialect).
 
 ## License
 

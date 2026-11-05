@@ -60,6 +60,7 @@ export {
   installCloudShortcut,
   shortcutDefinition,
   cloudSetupHint,
+  cloudJsonInstruction,
   CLOUD_SHORTCUT_NAME,
   CLOUD_SHORTCUT_NAME_WEB,
   CLOUD_CONTEXT_TOKENS,

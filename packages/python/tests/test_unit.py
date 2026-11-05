@@ -11,6 +11,10 @@ import pytest
 from apple_llm import (
     CLOUD_SHORTCUT_NAME,
     AppleLLMError,
+    ContextLengthError,
+    QuotaError,
+    SchemaValidationError,
+    SetupRequiredError,
     assert_tools,
     extract_json_span,
     fingerprint,
@@ -187,3 +191,223 @@ class TestDocumentInlining:
     def test_missing_file_is_an_error_not_a_silent_drop(self):
         with pytest.raises(AppleLLMError, match="not found"):
             with_documents("hi", ["/definitely/not/here.txt"])
+
+
+class TestCloudRunFailures:
+    @staticmethod
+    def fail(stderr):
+        import subprocess
+
+        from apple_llm._cloud import _describe_run_failure
+
+        return _describe_run_failure(
+            subprocess.CalledProcessError(1, ["shortcuts", "run"], stderr=stderr), "Apple LLM Cloud"
+        )
+
+    def test_names_apples_per_device_rate_limit(self):
+        # What `shortcuts run` prints while privatecloudcomputed is denying
+        # requests with deniedDueToUserDeviceRateLimit.
+        error = self.fail("Error: Your request can't be completed right now.\n")
+        assert isinstance(error, QuotaError)
+        assert error.tier == "cloud"
+        assert "rate-limiting this Mac" in str(error)
+        assert isinstance(self.fail("Error: Your request can’t be completed right now."), QuotaError)
+
+    def test_keeps_the_other_failures_apart(self):
+        assert isinstance(self.fail("Error: The input exceeds the maximum allowed length."), ContextLengthError)
+        assert isinstance(self.fail('Error: Couldn’t find shortcut "Apple LLM Cloud"'), SetupRequiredError)
+        other = self.fail("Error: something new")
+        assert type(other) is AppleLLMError
+        assert "something new" in str(other)
+
+
+class TestCloudProbe:
+    def setup_method(self):
+        import apple_llm._cloud as cloud
+
+        self.cloud = cloud
+
+    def on_mac(self, monkeypatch):
+        monkeypatch.setattr(self.cloud.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(self.cloud, "is_apple_silicon_mac", lambda: True)
+
+    def test_reports_shortcuts_failure_without_suggesting_setup(self, monkeypatch):
+        import subprocess
+
+        self.on_mac(monkeypatch)
+        def fail(*args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1, ["shortcuts", "list"], stderr="Error: Couldn’t communicate with a helper application.\n"
+            )
+        monkeypatch.setattr(self.cloud.subprocess, "run", fail)
+        probe = self.cloud.probe_cloud()
+        assert probe["available"] is False
+        assert "installed" not in probe
+        assert "Couldn’t communicate with a helper application" in probe["reason"]
+        with pytest.raises(AppleLLMError, match="Couldn’t communicate") as error:
+            self.cloud.CloudClient().ensure_ready()
+        assert not isinstance(error.value, SetupRequiredError)
+        with pytest.raises(AppleLLMError, match="Couldn’t communicate"):
+            self.cloud.install_count()
+
+    def test_lists_once_and_distinguishes_missing_shortcut(self, monkeypatch):
+        import subprocess
+
+        self.on_mac(monkeypatch)
+        calls = []
+        def run(*args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args[0], 0, stdout="Another Shortcut\n")
+        monkeypatch.setattr(self.cloud.subprocess, "run", run)
+        probe = self.cloud.probe_cloud()
+        assert probe["installed"] is False
+        assert len(calls) == 1
+        with pytest.raises(SetupRequiredError):
+            self.cloud.CloudClient().ensure_ready()
+
+
+class _StubCloud:
+    """Stands in for CloudClient.text: records prompts, returns scripted replies."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.prompts = []
+
+    def __call__(self, prompt, *, system=None, web_search=False, **kwargs):
+        self.prompts.append({"prompt": prompt, "system": system})
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def _cloud_llm(monkeypatch, replies, **options):
+    from apple_llm import AppleLLM, CloudClient
+
+    stub = _StubCloud(replies)
+    monkeypatch.setattr(CloudClient, "text", lambda self, prompt, **kw: stub(prompt, **kw))
+    llm = AppleLLM("cloud", **options)
+    llm._cloud = CloudClient()
+    llm._resolved = "cloud"
+    return llm, stub
+
+
+class TestCloudJson:
+    SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+
+    def test_asks_for_json_after_the_question(self, monkeypatch):
+        llm, stub = _cloud_llm(monkeypatch, ['{"city": "Paris"}'])
+        assert llm.json("Give me a city in France", schema=self.SCHEMA, system="Be terse.") == {"city": "Paris"}
+        # Placed first, the server model answered with prose; placed last, JSON.
+        assert stub.prompts[0]["system"] == "Be terse."
+        assert stub.prompts[0]["prompt"].startswith("Give me a city in France")
+        assert "only a JSON value" in stub.prompts[0]["prompt"]
+
+    def test_repairs_prose_once_showing_the_model_what_it_said(self, monkeypatch):
+        llm, stub = _cloud_llm(monkeypatch, ["Paris, population 2161000", '{"city": "Paris"}'])
+        assert llm.json("Give me a city in France", schema=self.SCHEMA) == {"city": "Paris"}
+        assert len(stub.prompts) == 2
+        assert "Paris, population 2161000" in stub.prompts[1]["prompt"]
+
+    def test_raises_a_typed_error_that_is_still_a_value_error(self, monkeypatch):
+        llm, _ = _cloud_llm(monkeypatch, ["Paris.", "Still Paris."])
+        with pytest.raises(SchemaValidationError) as caught:
+            llm.json("Give me a city in France", schema=self.SCHEMA)
+        assert caught.value.text == "Still Paris."
+        assert isinstance(caught.value, ValueError)
+
+    def test_inlines_documents_on_the_cloud_tier(self, monkeypatch, tmp_path):
+        note = tmp_path / "note.txt"
+        note.write_text("remember the milk")
+        llm, stub = _cloud_llm(monkeypatch, ["The milk."])
+        assert llm.text("What should I remember?", documents=[str(note)]) == "The milk."
+        assert "remember the milk" in stub.prompts[0]["prompt"]
+
+
+class TestCloudFallback:
+    @staticmethod
+    def rate_limited():
+        return QuotaError("Apple Private Cloud Compute is rate-limiting this Mac", "cloud")
+
+    def stub_device(self, monkeypatch):
+        from apple_llm import DeviceClient
+
+        calls = []
+        monkeypatch.setattr(DeviceClient, "ensure_ready", lambda self, progress=None: None)
+        monkeypatch.setattr(DeviceClient, "text", lambda self, prompt, **kw: calls.append(prompt) or "from the device")
+        return calls
+
+    def test_without_fallback_the_typed_error_surfaces(self, monkeypatch):
+        calls = self.stub_device(monkeypatch)
+        llm, _ = _cloud_llm(monkeypatch, [self.rate_limited()])
+        with pytest.raises(QuotaError):
+            llm.text("hi")
+        assert calls == []
+
+    def test_with_fallback_the_device_answers(self, monkeypatch):
+        calls = self.stub_device(monkeypatch)
+        llm, _ = _cloud_llm(monkeypatch, [self.rate_limited()], fallback="device")
+        assert llm.text("hi") == "from the device"
+        assert calls == ["hi"]
+
+    def test_rejects_an_unknown_fallback(self):
+        from apple_llm import AppleLLM
+
+        with pytest.raises(ValueError, match="fallback"):
+            AppleLLM("cloud", fallback="cloud")
+
+
+class TestCloudStream:
+    def test_streams_the_reply_as_one_delta(self, monkeypatch):
+        llm, _ = _cloud_llm(monkeypatch, ["whole reply"])
+        deltas = []
+        assert llm.stream("hi", on_delta=deltas.append) == "whole reply"
+        assert deltas == ["whole reply"]
+
+    def test_cli_stream_accepts_the_web_search_flag(self, monkeypatch, capsys):
+        # `run --stream` passed web_search to stream(), which did not take it:
+        # a TypeError on every streamed run, device tier included.
+        from apple_llm import AppleLLM, DeviceClient, cli
+
+        def ready(self, progress=None):
+            self._device = DeviceClient()
+            self._resolved = "device"
+
+        monkeypatch.setattr(AppleLLM, "ensure_ready", ready)
+        monkeypatch.setattr(
+            DeviceClient, "stream", lambda self, prompt, *, on_delta=None, **kw: on_delta("ok") or "ok"
+        )
+        assert cli.main(["run", "--stream", "hi"]) == 0
+        assert capsys.readouterr().out.strip() == "ok"
+
+
+class TestCliPrompt:
+    @staticmethod
+    def capture(monkeypatch):
+        from apple_llm import AppleLLM
+
+        seen = []
+        monkeypatch.setattr(AppleLLM, "ensure_ready", lambda self, progress=None: None)
+        monkeypatch.setattr(AppleLLM, "text", lambda self, prompt, **kw: seen.append(prompt) or "ok")
+        return seen
+
+    def test_a_bare_prompt_is_short_for_run(self, monkeypatch, capsys):
+        from apple_llm import cli
+
+        seen = self.capture(monkeypatch)
+        assert cli.main(["What is 2 + 2?"]) == 0
+        assert seen == ["What is 2 + 2?"]
+
+    def test_a_mistyped_command_still_errors(self, capsys):
+        from apple_llm import cli
+
+        with pytest.raises(SystemExit):
+            cli.main(["serv"])
+
+    def test_piped_text_goes_in_before_the_prompt(self, monkeypatch, capsys):
+        from apple_llm import cli
+
+        seen = self.capture(monkeypatch)
+        monkeypatch.setattr(cli, "_piped_input", lambda: "Maria owns the release notes.\n")
+        assert cli.main(["run", "Who owns the release notes?"]) == 0
+        assert seen == ["Maria owns the release notes.\n\nWho owns the release notes?"]

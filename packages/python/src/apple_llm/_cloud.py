@@ -34,6 +34,7 @@ from ._errors import (
     AppleLLMError,
     ContextLengthError,
     QuotaError,
+    SchemaValidationError,
     SetupRequiredError,
 )
 from ._errors import TimeoutError as AppleTimeoutError
@@ -58,6 +59,37 @@ _CALL_TIMEOUT = 120.0
 #: Import is asynchronous and unhurried (5-15s typical).
 _IMPORT_TIMEOUT = 90.0
 _IMPORT_POLL = 2.0
+
+#: Apple's per-device rate limit, which is all ``shortcuts run`` says about it.
+#: Underneath it is ``PrivateCloudComputeError deniedDueToUserDeviceRateLimit``
+#: (``WFAskLLMActionErrorDomain`` 1508), a different limiter from the quota
+#: ``probe()`` reads: ``quotaUsage`` keeps saying ``belowLimit`` while this one
+#: turns requests away. Ten calls in about two minutes were enough to trip it,
+#: and the denial is then cached and refused locally until it expires.
+_RATE_LIMITED = re.compile(r"can.?t be completed right now|cannot be completed right now", re.IGNORECASE)
+
+_RATE_LIMIT_MESSAGE = (
+    "Apple Private Cloud Compute is rate-limiting this Mac "
+    "(\"Your request can't be completed right now\").\n"
+    "This per-device limit is separate from the quota probe() reports, and it lifts on its own "
+    "after a few minutes. Wait and try again, or answer on device instead "
+    '(tier="device", or fallback="device").'
+)
+
+
+def cloud_json_instruction(schema: JsonSchema) -> str:
+    """How the cloud tier asks for JSON, appended *after* the prompt.
+
+    Shortcuts has no system role, so instructions are just text, and the Use
+    Model action is tuned for conversational replies. With this request placed
+    before the question, the server model answered "Give me a city in France"
+    with ``Paris, population 2161000`` -- the right fields, as prose.
+    """
+    return (
+        "Reply with only a JSON value that matches this JSON Schema: no prose before or after it, "
+        "no Markdown, no code fence.\n\n"
+        f"{json.dumps(schema, indent=2)}"
+    )
 
 
 def shortcut_definition(web_search: bool = False) -> dict[str, Any]:
@@ -131,8 +163,11 @@ def _list_shortcuts() -> list[str]:
         result = subprocess.run(
             ["shortcuts", "list"], capture_output=True, text=True, timeout=20, check=True
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as error:
+        detail = getattr(error, "stderr", None) or str(error)
+        if isinstance(detail, bytes):
+            detail = detail.decode(errors="replace")
+        raise AppleLLMError(f"Could not list Shortcuts: {detail.strip()}", "cloud") from error
     return [line.strip() for line in result.stdout.split("\n") if line.strip()]
 
 
@@ -225,26 +260,20 @@ def probe_cloud() -> dict[str, Any]:
     if platform.system() != "Darwin":
         return {
             "available": False,
-            "installed": False,
             "reason": f'unsupportedPlatform: this machine reports "{platform.system()}"',
         }
     if not is_apple_silicon_mac():
         return {
             "available": False,
-            "installed": False,
             "reason": "deviceNotEligible: Apple Intelligence needs Apple Silicon",
         }
     try:
-        subprocess.run(
-            ["shortcuts", "list"], capture_output=True, text=True, timeout=20, check=True
-        )
-    except (OSError, subprocess.SubprocessError):
+        count = install_count()
+    except AppleLLMError as error:
         return {
             "available": False,
-            "installed": False,
-            "reason": "this system does not provide /usr/bin/shortcuts",
+            "reason": str(error),
         }
-    count = install_count()
     if count == 0:
         return {"available": False, "installed": False, "reason": cloud_setup_hint()}
     if count > 1:
@@ -286,6 +315,8 @@ def _describe_run_failure(error: Exception, name: str) -> Exception:
             "cloud",
             reset,
         )
+    if _RATE_LIMITED.search(stderr):
+        return QuotaError(_RATE_LIMIT_MESSAGE, "cloud")
     if re.search(r"Couldn.t find shortcut", stderr, re.IGNORECASE):
         return SetupRequiredError(
             f'Shortcuts could not find "{name}".\n{cloud_setup_hint()}', "setup-cloud", "cloud"
@@ -339,7 +370,7 @@ class CloudClient:
         probe = probe_cloud()
         if not probe.get("available"):
             reason = probe.get("reason") or cloud_setup_hint()
-            if not probe.get("installed"):
+            if probe.get("installed") is False:
                 raise SetupRequiredError(reason, "setup-cloud", "cloud")
             raise AppleLLMError(reason, "cloud")
         self._ready = True
@@ -390,14 +421,32 @@ class CloudClient:
              **kwargs: Any) -> Any:
         """There is no constrained decoding on this tier, so the schema is spelled
         out in the prompt and the reply is mined for JSON. The shape is a request
-        here, not a guarantee -- unlike on device."""
-        instruction = (
-            "Reply with a single JSON value matching this JSON Schema. "
-            "Output only the JSON, with no commentary and no code fence.\n\n"
-            f"{json.dumps(schema, indent=2)}"
+        here, not a guarantee -- unlike on device.
+
+        A reply with no JSON in it is retried once, showing the model what it
+        said: every call is a fresh session, and told only that "your previous
+        answer" was wrong, the model has nothing to fix. Raises
+        :class:`SchemaValidationError` if the second reply has none either.
+        """
+        instruction = cloud_json_instruction(schema)
+        reply = self.text(f"{prompt}\n\n{instruction}", system=system, **kwargs)
+        try:
+            return parse_llm_json(reply)
+        except ValueError:
+            pass
+        previous = reply if len(reply) <= 2000 else f"{reply[:2000]}..."
+        repair = (
+            f"{prompt}\n\nYour previous answer was:\n{previous}\n\n"
+            "It was rejected: it is not valid JSON. Answer again, fixing that.\n\n"
+            f"{instruction}"
         )
-        combined = f"{system}\n\n{instruction}" if system else instruction
-        return parse_llm_json(self.text(prompt, system=combined, **kwargs))
+        reply = self.text(repair, system=system, **kwargs)
+        try:
+            return parse_llm_json(reply)
+        except ValueError:
+            raise SchemaValidationError(
+                f"The cloud model did not reply with valid JSON: {reply[:200]}", reply, "cloud"
+            ) from None
 
     def close(self) -> None:
         """Nothing long-lived: each call is its own ``shortcuts run``."""
