@@ -8,7 +8,7 @@
 <link rel="canonical" href="https://jagdishpal02000.github.io/apple-llm/">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230A0B0D'/%3E%3Cpath d='M17 40l10-8-10-8' stroke='%23F7F8FA' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='33' y='37' width='14' height='6' rx='1' fill='%23D4FF3A'/%3E%3C/svg%3E">
 <meta property="og:title" content="apple-llm — the free AI already on your Mac">
-<meta property="og:description" content="Apple's on-device and Private Cloud Compute LLMs from Node.js and Python. No API key, no account, no model download.">
+<meta property="og:description" content="Apple's on-device and Private Cloud Compute LLMs, plus your Mac's voices and speech recognition, from Node.js and Python. No API key, no account, no model download.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://jagdishpal02000.github.io/apple-llm/">
 <meta property="og:image" content="https://jagdishpal02000.github.io/apple-llm/og.png">
@@ -23,7 +23,7 @@
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
   "name": "apple-llm",
-  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs from Node.js and Python. No API key, no account.",
+  "description": "Apple's on-device (Foundation Models) and Private Cloud Compute LLMs, plus macOS text to speech and speech recognition, from Node.js and Python. No API key, no account.",
   "codeRepository": "https://github.com/jagdishpal02000/apple-llm",
   "programmingLanguage": ["TypeScript", "Python", "Swift"],
   "runtimePlatform": "macOS 26+ on Apple Silicon",
@@ -65,7 +65,10 @@
 
 <!-- ─────────────────────────── HERO -->
 <section class="hero wrap" id="top">
-  <p class="kicker">v%APPLE_LLM_VERSION% <i>/</i> npm + PyPI <i>/</i> macOS 26 &amp; 27 on Apple Silicon</p>
+  <div class="hero-tags">
+    <p class="kicker">v%APPLE_LLM_VERSION% <i>/</i> npm + PyPI <i>/</i> macOS 26 &amp; 27 on Apple Silicon</p>
+    <a class="new" href="#speech"><b>New in 0.3</b> Your Mac can talk and listen <span aria-hidden="true">→</span></a>
+  </div>
   <h1>Two free LLMs came with your Mac.<br> <em>apple-llm calls both.</em></h1>
 
   <div class="hero-grid">
@@ -309,7 +312,7 @@ client.audio.transcriptions.create(model="whisper-1", file=open("hello.aac", "rb
   </div>
 
   <div class="notes">
-    <p><strong>Check the licence before you ship audio.</strong> Apple's licence allows its system voices for your personal, non-commercial use and rules out recording or publishing them in a commercial context. That covers every voice, and it's Apple's rule rather than ours. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">The clause, and what it means →</a></p>
+    <p><strong>Check the licence before you ship audio.</strong> Apple's licence allows its system voices for your personal, non-commercial use and rules out recording or publishing them in a profit, non-profit, public-sharing or commercial context. That covers every voice, and it's Apple's rule rather than ours. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">The clause, and what it means →</a></p>
     <p><strong>Siri voices.</strong> Apple doesn't let apps choose them. Where macOS lists one under the System voice setting, you can pick it there and <code>speak</code> should use it; we haven't been able to test that yet. Timings are from an M4 MacBook Air on macOS 27.2.</p>
   </div>
 </section>
@@ -344,13 +347,16 @@ client.audio.transcriptions.create(model="whisper-1", file=open("hello.aac", "rb
         <tr><th scope="row">Library for Python</th><td class="us y">Yes</td><td class="y">Yes</td><td class="n">No</td><td class="n">No</td><td class="m">Via HTTP</td></tr>
         <tr><th scope="row">OpenAI-compatible server</th><td class="us y">Yes</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
         <tr><th scope="row">Vercel AI SDK provider</th><td class="us y">Yes, v6 &amp; v7</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td><td class="n">No</td></tr>
+        <tr><th scope="row">Text to speech, Apple's voices</th><td class="us y">Yes, in the library</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
+        <tr><th scope="row">Speech to text, on device</th><td class="us y">Yes, in the library</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
         <tr><th scope="row">Runs other models (MLX)</th><td class="us n">No</td><td class="n">No</td><td class="n">No</td><td class="n">No</td><td class="y">Yes</td></tr>
       </tbody>
     </table>
   </div>
   <div class="notes">
     <p><sup>1</sup> tsfm has merged Private Cloud Compute support on a branch, unreleased as of 30 Sep 2026. It needs the <code>com.apple.developer.private-cloud-compute</code> entitlement on a signed host app, so it doesn't work from plain <code>node</code>. Apple's own <code>fm</code> command-line tool needs a machine-wide <code>sudo fm license</code> first.</p>
-    <p>Checked against each project's README, npm and PyPI on 30 September 2026. <a href="https://github.com/jagdishpal02000/apple-llm/issues">Spotted a mistake? Open an issue.</a></p>
+    <p>Checked against each project's README, npm and PyPI on 30 September 2026, and the speech rows on 5 November 2026. <a href="https://github.com/jagdishpal02000/apple-llm/issues">Spotted a mistake? Open an issue.</a></p>
+    <p><strong>For speech alone:</strong> <a href="https://github.com/scouzi1966/maclocal-api">afm</a> does both over its own CLI and HTTP server, and <a href="https://github.com/finnvoor/yap">yap</a> is a good Swift CLI for transcription. On PyPI, mac-speech-analyzer and macbook-ai also wrap parts of this. What apple-llm adds is speech and Apple's LLMs in one library, for Node and Python, with no dependencies.</p>
     <p><strong>Not in the table:</strong> Ollama, LM Studio and MLX run open-weights models that you download and choose. They're the better pick for code and long reasoning. apple-llm uses the models already on your Mac, and plenty of people run both.</p>
   </div>
 </section>
@@ -563,7 +569,7 @@ apple-llm transcribe meeting.mp4                   # audio or video to text</cod
     </div>
     <div>
       <dt>Can I use the audio in a product?</dt>
-      <dd>Check Apple's licence first. It allows system voices for personal, non-commercial use and rules out recording or publishing them in a commercial context. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">Here's the clause</a>. Speech recognition isn't covered by it.</dd>
+      <dd>Check Apple's licence first. It allows system voices for personal, non-commercial use and rules out recording or publishing them in a profit, non-profit, public-sharing or commercial context. <a href="https://github.com/jagdishpal02000/apple-llm#the-licence-on-voices">Here's the clause</a>. Speech recognition isn't covered by it.</dd>
     </div>
   </dl>
 </section>
