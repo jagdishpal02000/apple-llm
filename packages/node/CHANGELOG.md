@@ -11,8 +11,10 @@
   from an older SDK. Every such use is now fenced at compile time too. The helper
   builds with the macOS 26.5 SDK and the 27.0 SDK, for either OS as the target,
   and the 26.5 build was run here through text, JSON, streaming, token counting,
-  a context overflow and speech. It has not yet been run on a Mac with macOS 26
-  installed, so reports from one are welcome. On macOS 26 you get text, JSON,
+  a context overflow and speech. CI now builds it with every macOS 26 SDK from
+  26.0 to 26.5 and runs it on macOS 26. Generation there is still untested,
+  because CI has no Apple Intelligence, so reports from a macOS 26 Mac are
+  welcome. On macOS 26 you get text, JSON,
   streaming, sessions, function tools and speech; images, the built-in tools and
   token usage still need macOS 27.
 - **A Mac on macOS 26 with the macOS 27 Command Line Tools built a helper that
