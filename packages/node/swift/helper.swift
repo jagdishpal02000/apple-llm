@@ -121,6 +121,28 @@
 //   extra failure kinds: permission | setup (a language model is not installed)
 //                        | speech
 //
+// Building against older SDKs
+//
+//   This file has to compile with whatever SDK the user's Command Line Tools
+//   ship, and a Mac on macOS 26 has a macOS 26 SDK, which declares none of the
+//   APIs macOS 27 added. `#available` is a run-time check, so it cannot hide a
+//   symbol the SDK does not declare: every use of a newer API is also fenced at
+//   compile time, by the FoundationModels module version the SDK carries
+//   (1.5.2 in the 26.5 SDK, 2.0.68 in the 27.0 SDK):
+//
+//     #if canImport(FoundationModels, _version: 2)        // the macOS 27 SDK
+//     #if compiler(>=6.3) && canImport(FoundationModels, _version: 1.4)
+//                                                         // the 26.4 SDK, which
+//                                                         // added contextSize and
+//                                                         // tokenCount(for:)
+//
+//   Inside a fence the `#available` checks still decide at run time, because
+//   the deployment target is the older of the SDK and the running OS: a Mac on
+//   macOS 26 with the macOS 27 SDK builds a binary that runs on 26 and switches
+//   the 27 features on only where they exist. A helper built with an older SDK
+//   than the OS says so in --probe and in its errors, since updating the Command
+//   Line Tools is all it takes to turn those features on.
+//
 
 import AVFoundation
 import AppKit
@@ -151,6 +173,26 @@ private func emit(_ object: [String: Any]) {
     print(text)
     fflush(stdout)
     emitLock.unlock()
+}
+
+/// The reason a macOS 27 feature is off, worded for the case that applies: an
+/// older OS, or macOS 27 with a helper built from an older SDK, where updating
+/// the Command Line Tools is the whole fix.
+private func needsNewerMacOS(_ what: String, version: String = "27") -> String {
+    #if canImport(FoundationModels, _version: 2)
+    return "\(what) needs macOS \(version) or later"
+    #else
+    if #available(macOS 27.0, *) { return "\(what) \(sdkTooOldAdvice(version))" }
+    return "\(what) needs macOS \(version) or later"
+    #endif
+}
+
+/// What to do when this Mac's OS is new enough but the SDK the helper was built
+/// with is not. The client rebuilds the helper whenever the SDK changes.
+private func sdkTooOldAdvice(_ version: String) -> String {
+    "needs a helper built with the macOS \(version) SDK, and this one was built with an older SDK. "
+        + "Update the Xcode Command Line Tools (System Settings › General › Software Update, "
+        + "or `xcode-select --install`), then run apple-llm again: it rebuilds the helper by itself."
 }
 
 private func jsonValue(_ text: String) -> Any? {
@@ -533,14 +575,15 @@ private func transcriptEntries(from history: [[String: Any]]) -> [Transcript.Ent
 /// never ahead of every call, and binary-searches the cut: log2(turns) token
 /// counts rather than one per dropped turn.
 ///
-/// macOS 27 only, since it needs `tokenCount`; on 26 the history is left as is
-/// and an overflow surfaces as a ContextLengthError.
+/// Needs `tokenCount(for:)`, which arrived in macOS 26.4; before that the history
+/// is left as is and an overflow surfaces as a ContextLengthError.
 @available(macOS 26.0, *)
 private func fitted(
     _ entries: [Transcript.Entry], model: SystemLanguageModel, instructions: String,
     tools: [any Tool], prompt: Prompt, reserve: Int
 ) async -> (entries: [Transcript.Entry], dropped: Int) {
-    guard #available(macOS 27.0, *), !entries.isEmpty else { return (entries, 0) }
+    #if compiler(>=6.3) && canImport(FoundationModels, _version: 1.4)
+    guard #available(macOS 26.4, *), !entries.isEmpty else { return (entries, 0) }
     var fixed = (try? await model.tokenCount(for: prompt)) ?? 0
     if !instructions.isEmpty {
         fixed += (try? await model.tokenCount(for: Instructions(instructions))) ?? 0
@@ -563,6 +606,22 @@ private func fitted(
         if await fits(entries[cuts[mid]...]) { high = mid } else { low = mid + 1 }
     }
     return (Array(entries[cuts[low]...]), low + 1)
+    #else
+    return (entries, 0)
+    #endif
+}
+
+/// The model's context window. `contextSize` arrived in the macOS 26.4 SDK
+/// (back-deployed to 26.0), so a helper built with an earlier SDK can only fall
+/// back to the 4096 tokens macOS 26 has; on a later OS it does not know.
+@available(macOS 26.0, *)
+private func contextSizeOf(_ model: SystemLanguageModel) -> Int? {
+    #if compiler(>=6.3) && canImport(FoundationModels, _version: 1.4)
+    return model.contextSize
+    #else
+    if #available(macOS 27.0, *) { return nil }
+    return 4096
+    #endif
 }
 
 @available(macOS 26.0, *)
@@ -644,6 +703,7 @@ private func classify(_ error: Error) -> (kind: String, extra: [String: Any]) {
         }
         return ("tool", ["tool": toolError.tool.name])
     }
+    #if canImport(FoundationModels, _version: 2)
     if #available(macOS 27.0, *) {
         if let modern = error as? LanguageModelError {
             switch modern {
@@ -663,16 +723,17 @@ private func classify(_ error: Error) -> (kind: String, extra: [String: Any]) {
             }
         }
     }
+    #endif
     return (legacyKind(error), [:])
 }
 
 /// macOS 26's error type, kept so one helper source serves both OS versions.
 ///
 /// Building on macOS 27 emits one deprecation warning at the call site below.
-/// That is benign and self-correcting: the deployment target is derived from the
-/// host SDK, so on a macOS 26 machine — the only place this branch is reachable —
-/// the target is macos26.0 and nothing is deprecated yet. On macOS 27 the
-/// warning points at code `#available` has already made unreachable.
+/// That is benign: the deployment target is the older of the SDK and the running
+/// OS, so on a macOS 26 machine — the only place this branch is reachable — the
+/// target is macos26.x and nothing is deprecated yet. On macOS 27 the warning
+/// points at code `#available` has already made unreachable.
 @available(macOS 26.0, *)
 @available(macOS, deprecated: 27.0)
 private func legacyKind(_ error: Error) -> String {
@@ -735,30 +796,30 @@ private func toolsFor(_ names: [String]) throws -> [any Tool] {
                 #if canImport(_Vision_FoundationModels)
                 out.append(OCRTool())
                 #else
-                throw ToolError.unsupported("ocr needs macOS 27 with Vision tools")
+                throw ToolError.unsupported(needsNewerMacOS("the ocr tool"))
                 #endif
             } else {
-                throw ToolError.unsupported("ocr needs macOS 27 or later")
+                throw ToolError.unsupported("the ocr tool needs macOS 27 or later")
             }
         case "barcode":
             if #available(macOS 27.0, *) {
                 #if canImport(_Vision_FoundationModels)
                 out.append(BarcodeReaderTool())
                 #else
-                throw ToolError.unsupported("barcode needs macOS 27 with Vision tools")
+                throw ToolError.unsupported(needsNewerMacOS("the barcode tool"))
                 #endif
             } else {
-                throw ToolError.unsupported("barcode needs macOS 27 or later")
+                throw ToolError.unsupported("the barcode tool needs macOS 27 or later")
             }
         case "spotlight":
             if #available(macOS 27.0, *) {
                 #if canImport(_CoreSpotlight_FoundationModels)
                 out.append(SpotlightSearchTool())
                 #else
-                throw ToolError.unsupported("spotlight needs macOS 27 with Spotlight tools")
+                throw ToolError.unsupported(needsNewerMacOS("the spotlight tool"))
                 #endif
             } else {
-                throw ToolError.unsupported("spotlight needs macOS 27 or later")
+                throw ToolError.unsupported("the spotlight tool needs macOS 27 or later")
             }
         default:
             throw ToolError.unknown("unknown tool \"\(name)\" (want ocr, barcode, spotlight)")
@@ -877,6 +938,7 @@ private func imageSpecsFrom(_ value: Any?) -> [ImageSpec] {
 @available(macOS 26.0, *)
 private func promptWith(text: String, imageSpecs: [ImageSpec]) -> Prompt {
     guard !imageSpecs.isEmpty else { return Prompt(text) }
+    #if canImport(FoundationModels, _version: 2)
     if #available(macOS 27.0, *) {
         let attachments = imageSpecs.map { spec in
             Attachment(imageURL: URL(fileURLWithPath: spec.path)).label(spec.label)
@@ -886,6 +948,8 @@ private func promptWith(text: String, imageSpecs: [ImageSpec]) -> Prompt {
             text
         }
     }
+    #endif
+    // Unreachable with images: handleEnvelope turns them away first.
     return Prompt(text)
 }
 
@@ -932,12 +996,14 @@ private struct Outcome {
     var finishReason = "stop"
 }
 
+#if canImport(FoundationModels, _version: 2)
 @available(macOS 27.0, *)
 private func usageOf(_ usage: LanguageModelSession.Usage) -> [String: Any] {
     ["inputTokens": usage.input.totalTokenCount,
      "cachedInputTokens": usage.input.cachedTokenCount,
      "outputTokens": usage.output.totalTokenCount]
 }
+#endif
 
 /// A response that used its whole token budget was cut off, not finished.
 /// Reported so a caller can tell a short answer from a truncated one.
@@ -982,6 +1048,7 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
     let historyTurns = envelope["history"] as? [[String: Any]] ?? []
 
     if !imageSpecs.isEmpty {
+        #if canImport(FoundationModels, _version: 2)
         if #available(macOS 27.0, *) {
             guard model.capabilities.contains(.vision) else {
                 emit(["ok": false, "kind": "unsupported",
@@ -998,6 +1065,10 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
                   "error": "images need macOS 27 or later"])
             return
         }
+        #else
+        emit(["ok": false, "kind": "unsupported", "error": needsNewerMacOS("attaching images")])
+        return
+        #endif
     }
 
     let tools: [any Tool]
@@ -1016,6 +1087,8 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
         return
     }
     if !tools.isEmpty {
+        // macOS 26 has no capabilities to ask; its model calls tools.
+        #if canImport(FoundationModels, _version: 2)
         if #available(macOS 27.0, *) {
             guard model.capabilities.contains(.toolCalling) else {
                 emit(["ok": false, "kind": "unsupported",
@@ -1023,6 +1096,7 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
                 return
             }
         }
+        #endif
     }
 
     // A response schema, decoded once for every op that needs it.
@@ -1049,9 +1123,10 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
     case "generate", "stream":
         break
     case "countTokens":
-        guard #available(macOS 27.0, *) else {
+        #if compiler(>=6.3) && canImport(FoundationModels, _version: 1.4)
+        guard #available(macOS 26.4, *) else {
             emit(["ok": false, "kind": "unsupported",
-                  "error": "counting tokens needs macOS 27 or later"])
+                  "error": "counting tokens needs macOS 26.4 or later"])
             return
         }
         do {
@@ -1075,6 +1150,15 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
         } catch {
             emit(failure(error))
         }
+        #else
+        let why: String
+        if #available(macOS 26.4, *) {
+            why = "counting tokens \(sdkTooOldAdvice("26.4"))"
+        } else {
+            why = "counting tokens needs macOS 26.4 or later"
+        }
+        emit(["ok": false, "kind": "unsupported", "error": why])
+        #endif
         return
 
     case "prewarm":
@@ -1126,18 +1210,28 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
 
     let wantsStream = (op == "stream") || streaming
     let maxTokens = intNum(envelope["maxTokens"])
+    // The macOS 27 SDK renamed `sampling:` to `samplingMode:` (back-deployed to
+    // 26.0) and deprecated the old label, which is all the 26 SDK has.
+    #if canImport(FoundationModels, _version: 2)
     let options = GenerationOptions(
         samplingMode: samplingFrom(envelope["sampling"]),
         temperature: num(envelope["temperature"]),
         maximumResponseTokens: maxTokens
     )
+    #else
+    let options = GenerationOptions(
+        sampling: samplingFrom(envelope["sampling"]),
+        temperature: num(envelope["temperature"]),
+        maximumResponseTokens: maxTokens
+    )
+    #endif
     let reuse = envelope["reuseSession"] as? Bool ?? false
     // A caller that spells the schema out in its own system prompt could pass
     // false. A library cannot assume that, and a schema's `description`
     // fields are how the decoder gets its generation guidance, so default true.
     let includeSchema = envelope["includeSchemaInPrompt"] as? Bool ?? true
     // Room left for the response when trimming history to fit.
-    let reserve = min(maxTokens ?? 1024, model.contextSize / 2)
+    let reserve = min(maxTokens ?? 1024, (contextSizeOf(model) ?? 4096) / 2)
     let fingerprint = [useCase, guardrails, toolNames.sorted().joined(separator: ","),
                        jsonText(envelope["functions"] ?? [Any]()), instructions].joined(separator: "|")
 
@@ -1179,7 +1273,9 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
             try Task.checkCancellation()
             var outcome = Outcome(content: response.content.jsonString)
             outcome.toolCalls = toolActivity(response.transcriptEntries)
+            #if canImport(FoundationModels, _version: 2)
             if #available(macOS 27.0, *) { outcome.usage = usageOf(response.usage) }
+            #endif
             outcome.finishReason = finishReason(usage: outcome.usage, maxTokens: maxTokens)
             return outcome
         }
@@ -1187,7 +1283,9 @@ private func handleEnvelope(envelope: [String: Any], streaming: Bool) async {
         try Task.checkCancellation()
         var outcome = Outcome(content: response.content)
         outcome.toolCalls = toolActivity(response.transcriptEntries)
+        #if canImport(FoundationModels, _version: 2)
         if #available(macOS 27.0, *) { outcome.usage = usageOf(response.usage) }
+        #endif
         outcome.finishReason = finishReason(usage: outcome.usage, maxTokens: maxTokens)
         return outcome
     }
@@ -1276,10 +1374,12 @@ private func streamed(
                 onEvent()
                 last = json
             }
+            #if canImport(FoundationModels, _version: 2)
             if #available(macOS 27.0, *) {
                 outcome.usage = usageOf(snapshot.usage)
                 outcome.toolCalls = toolActivity(snapshot.transcriptEntries)
             }
+            #endif
         }
         // A cancelled stream can end quietly rather than throw; without this the
         // truncated text would be reported as a normal, finished answer.
@@ -1300,10 +1400,12 @@ private func streamed(
             emit(["ok": true, "delta": delta, "done": false])
             onEvent()
         }
+        #if canImport(FoundationModels, _version: 2)
         if #available(macOS 27.0, *) {
             outcome.usage = usageOf(snapshot.usage)
             outcome.toolCalls = toolActivity(snapshot.transcriptEntries)
         }
+        #endif
     }
     try Task.checkCancellation()
     outcome.content = previous
@@ -1330,6 +1432,7 @@ private func describe(_ reason: SystemLanguageModel.Availability.UnavailableReas
 /// spending a Shortcuts round trip on it. On macOS 27 Golden Gate this is the
 /// next-generation server model Siri AI is built on: it reports reasoning,
 /// vision and tool calling, with a 32,768-token window.
+#if canImport(FoundationModels, _version: 2)
 @available(macOS 27.0, *)
 private func cloudModel() async -> [String: Any] {
     let pcc = PrivateCloudComputeLanguageModel()
@@ -1357,6 +1460,7 @@ private func cloudModel() async -> [String: Any] {
     if let contextSize = try? await pcc.contextSize { out["contextSize"] = contextSize }
     return out
 }
+#endif
 
 // MARK: - Speech
 
@@ -2895,7 +2999,8 @@ struct AppleLLMHelper {
         let model = SystemLanguageModel.default
 
         if CommandLine.arguments.contains("--probe") {
-            var payload: [String: Any] = ["contextSize": model.contextSize]
+            var payload: [String: Any] = [:]
+            if let contextSize = contextSizeOf(model) { payload["contextSize"] = contextSize }
             switch model.availability {
             case .available:
                 payload["available"] = true
@@ -2903,6 +3008,9 @@ struct AppleLLMHelper {
                 payload["available"] = false
                 payload["reason"] = describe(reason)
             }
+            // Both use cases are macOS 26 API.
+            payload["useCases"] = ["general", "contentTagging"]
+            #if canImport(FoundationModels, _version: 2)
             if #available(macOS 27.0, *) {
                 payload["variant"] = model.variant.displayName
                 // What the model can actually do, rather than what the docs
@@ -2915,9 +3023,32 @@ struct AppleLLMHelper {
                     "reasoning": capabilities.contains(.reasoning),
                     "toolCalling": capabilities.contains(.toolCalling),
                 ]
-                payload["useCases"] = ["general", "contentTagging"]
                 payload["cloud"] = await cloudModel()
             }
+            #else
+            if #available(macOS 27.0, *) {
+                payload["warning"] =
+                    "This helper was built with an SDK older than this macOS, so the macOS 27 features are off: "
+                    + "images, the ocr, barcode and spotlight tools, token usage, and the model and cloud details. "
+                    + "Update the Xcode Command Line Tools (System Settings › General › Software Update, or "
+                    + "`xcode-select --install`), then run apple-llm again: it rebuilds the helper by itself."
+            }
+            #endif
+            // The built-in tools this helper can actually offer here: the SDK it
+            // was built with has to declare them, and the OS has to run them.
+            var builtInTools: [String] = []
+            if #available(macOS 27.0, *) {
+                #if canImport(_Vision_FoundationModels)
+                builtInTools += ["ocr", "barcode"]
+                #endif
+                #if canImport(_CoreSpotlight_FoundationModels)
+                builtInTools.append("spotlight")
+                #endif
+            }
+            var countsTokens = false
+            #if compiler(>=6.3) && canImport(FoundationModels, _version: 1.4)
+            if #available(macOS 26.4, *) { countsTokens = true }
+            #endif
             payload["features"] = [
                 "protocol": 2,
                 "streaming": true,
@@ -2928,7 +3059,8 @@ struct AppleLLMHelper {
                 "labelledAttachments": true,
                 "functionTools": true,
                 "cancellation": true,
-                "builtInTools": ["ocr", "barcode", "spotlight"],
+                "builtInTools": builtInTools,
+                "countTokens": countsTokens,
                 "speech": true,
             ]
             emit(payload)

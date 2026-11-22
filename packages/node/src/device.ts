@@ -84,7 +84,10 @@ export interface HelperFeatures {
   labelledAttachments: boolean;
   functionTools?: boolean;
   cancellation?: boolean;
+  /** The built-in tools this Mac can run: none before macOS 27, or with an older SDK. */
   builtInTools: string[];
+  /** Whether `countTokens` works here (macOS 26.4+). */
+  countTokens?: boolean;
 }
 
 /** An image attachment: a bare path, or a path with a Siri-style label. */
@@ -133,6 +136,11 @@ export interface DeviceProbe {
   features?: HelperFeatures;
   /** PCC quota and model info, surfaced here because the on-device helper is what can read them. */
   cloud?: CloudModelInfo;
+  /**
+   * Set when the helper was built with an SDK older than this macOS, which turns
+   * the newer features off. Says how to fix it: update the Command Line Tools.
+   */
+  warning?: string;
 }
 
 /**

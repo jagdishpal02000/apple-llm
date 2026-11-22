@@ -457,6 +457,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(f"  use cases   {', '.join(device['useCases'])}")
                 if device.get("reason"):
                     print(f"  reason      {device['reason']}")
+                if device.get("warning"):
+                    print(f"  warning     {device['warning']}")
                 cloud = result["cloud"]
                 print("\ncloud (private cloud compute)")
                 print(f"  available   {cloud.get('available')}")

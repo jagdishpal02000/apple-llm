@@ -401,6 +401,7 @@ async function main(): Promise<number> {
     }
     if (d.useCases !== undefined) process.stdout.write(`  use cases   ${d.useCases.join(', ')}\n`);
     if (d.reason !== undefined) process.stdout.write(`  reason      ${d.reason}\n`);
+    if (d.warning !== undefined) process.stdout.write(`  warning     ${d.warning}\n`);
     const c = result.cloud;
     process.stdout.write('\ncloud (private cloud compute)\n');
     process.stdout.write(`  available   ${c.available}\n`);
