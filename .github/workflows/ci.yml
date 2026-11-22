@@ -77,4 +77,9 @@ jobs:
             fi
           done
           echo "SDKs tested:$tested"
+          # Silence is not success: a renamed Xcode folder must not pass by testing nothing.
+          if [ "$tested" = " " ]; then
+            echo "::error::No Xcode with a macOS SDK was found in /Applications, so nothing was built"
+            exit 1
+          fi
           exit $status
