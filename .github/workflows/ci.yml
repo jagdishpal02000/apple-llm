@@ -1,0 +1,80 @@
+name: CI
+
+# Unit tests for both packages, and the Swift helper built with every Xcode on
+# GitHub's macOS 26 runner.
+#
+# The helper is compiled on the user's Mac, with whatever SDK their Command Line
+# Tools ship, so it has to build with all of them: 0.3.0 did not build with the
+# macOS 26 SDK, and nothing caught it. The runners have no Apple Intelligence,
+# so the live tests stay local; running --probe still proves the helper loads
+# and runs on macOS 26, including when it was built with a newer SDK.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/node/package-lock.json
+
+      - name: Both packages ship swift/helper.swift unchanged
+        run: node scripts/embed-helper.mjs --check
+
+      - name: Node
+        working-directory: packages/node
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Python
+        working-directory: packages/python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pytest pydantic
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q
+
+  helper:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and run the helper with every installed SDK
+        run: |
+          sw_vers
+          status=0
+          tested=" "
+          for app in /Applications/Xcode_*.app; do
+            export DEVELOPER_DIR="$app/Contents/Developer"
+            sdk=$(xcrun --show-sdk-version 2>/dev/null) || continue
+            case "$tested" in *" $sdk "*) continue ;; esac
+            tested="$tested$sdk "
+            # One SDK per build: a cached helper would hide a failure.
+            rm -rf "$HOME/Library/Caches/apple-llm/bin"
+            echo "::group::$(basename "$app"): SDK $sdk"
+            if python3 -I scripts/check-helper.py packages/python/src; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::The helper failed with $(basename "$app") (SDK $sdk)"
+              status=1
+            fi
+          done
+          echo "SDKs tested:$tested"
+          exit $status
