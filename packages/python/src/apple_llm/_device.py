@@ -7,22 +7,28 @@ import json
 import os
 import platform
 import subprocess
+import time
+import uuid
 from datetime import datetime
-from typing import Any, Literal, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 
 from ._compile import ProgressCallback, ensure_binary
 from ._errors import (
     AppleLLMError,
+    CancelledError,
     ContextLengthError,
+    ModelBusyError,
     ModelUnavailableError,
     QuotaError,
     RefusalError,
     SchemaRejectedError,
+    UnsupportedError,
     to_unavailable_reason,
     unavailable_message,
 )
+from ._errors import TimeoutError as AppleTimeoutError
 from ._protocol import HelperServer
-from ._schema import JsonSchema, to_apple_schema
+from ._schema import JsonSchema, restore_nulls, to_apple_schema
 from ._target import is_apple_silicon_mac, macos_major
 
 #: Sampling temperature. Not zero on purpose.
@@ -41,6 +47,11 @@ DEFAULT_TEMPERATURE = 0.4
 DEFAULT_MAX_TOKENS = 2048
 
 _CALL_TIMEOUT = 120.0
+
+#: Backoff before retrying a request the model manager turned away as busy
+#: (several processes using the model at once). Observed to clear within a
+#: second under a full parallel test run. The same schedule as the Node package.
+_BUSY_RETRY_DELAYS = (0.25, 1.0, 2.5)
 
 #: Apple ships a use case specialised for tagging and topic extraction.
 UseCase = Literal["general", "contentTagging"]
@@ -161,7 +172,8 @@ def probe_device(on_progress: Optional[ProgressCallback] = None) -> dict[str, An
 
     try:
         result = subprocess.run(  # noqa: S603 - path comes from our own cache
-            [binary, "--probe"], capture_output=True, text=True, timeout=30, check=True
+            [binary, "--probe"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30, check=True,
         )
         return json.loads(result.stdout.strip())
     except (OSError, ValueError, subprocess.SubprocessError) as err:
@@ -201,6 +213,18 @@ def _raise_for(response: dict[str, Any], raw: str) -> None:
         raise QuotaError(f"Apple rate limited the on-device model: {detail}", "device", parsed)
     if kind == "guardrail":
         raise RefusalError(f"The on-device model declined to answer: {detail}", "device")
+    if kind == "timeout":
+        raise AppleTimeoutError(f"Apple on-device generation timed out: {detail}", "device")
+    if kind == "cancelled":
+        raise CancelledError("The request was cancelled.", "device")
+    if kind == "unsupported":
+        raise UnsupportedError(f"Apple on-device generation failed: {detail}", "device")
+    if kind == "busy":
+        raise ModelBusyError(
+            "Apple's on-device model is busy serving other processes and turned the request "
+            "away (ModelManagerError 1042), even after retrying. Try again shortly.",
+            "device",
+        )
     raise AppleLLMError(f"Apple on-device generation failed: {detail}", "device")
 
 
@@ -244,19 +268,57 @@ class DeviceClient:
             extra = f" ({variant}, {probe.get('contextSize')} token context)" if variant else ""
             on_progress(f"apple on-device model ready{extra}")
 
-    def _exchange(self, envelope: dict[str, Any]) -> dict[str, Any]:
-        """Send one envelope and return the parsed reply, raising on failure."""
+    def _helper(self) -> HelperServer:
         self.ensure_ready()
         binary = self._binary or ensure_binary()
         if self._server is None:
             self._server = HelperServer(binary, timeout=_CALL_TIMEOUT)
-        raw = self._server.send(json.dumps(envelope))
-        try:
-            response = json.loads(raw)
-        except ValueError as err:
-            raise AppleLLMError(
-                f"Apple helper returned an unreadable envelope: {raw[:200]}", "device"
-            ) from err
+        return self._server
+
+    def _exchange(
+        self,
+        envelope: dict[str, Any],
+        on_delta: Optional[Callable[[str], None]] = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        """Send one envelope and return the parsed reply, raising on failure.
+
+        Each attempt carries its own id, which is what a Ctrl-C's cancel line
+        targets. A busy model manager turns a request away before generating
+        anything, so that is retried with backoff -- unless a stream has already
+        handed the caller some of its text.
+        """
+        server = self._helper()
+        delivered = False
+
+        def forward(delta: str) -> None:
+            nonlocal delivered
+            delivered = True
+            if on_delta is not None:
+                on_delta(delta)
+
+        delays = iter(_BUSY_RETRY_DELAYS)
+        while True:
+            request_id = uuid.uuid4().hex
+            payload = json.dumps({**envelope, "id": request_id})
+            if stream:
+                raw = server.stream(payload, forward, request_id=request_id)
+            else:
+                raw = server.send(payload, request_id=request_id)
+            try:
+                response = json.loads(raw)
+            except ValueError as err:
+                raise AppleLLMError(
+                    f"Apple helper returned an unreadable envelope: {raw[:200]}", "device"
+                ) from err
+            if not isinstance(response, dict):
+                raise AppleLLMError(f"Apple helper returned an unreadable envelope: {raw[:200]}", "device")
+            if response.get("ok") is True or response.get("kind") != "busy" or delivered:
+                break
+            delay = next(delays, None)
+            if delay is None:
+                break
+            time.sleep(delay)
         if response.get("ok") is not True:
             _raise_for(response, raw)
         return response
@@ -326,14 +388,8 @@ class DeviceClient:
         is the full text. Text only: the helper rejects schema+stream, because
         partial JSON is not a usable delta.
         """
-        from ._compile import ensure_binary as _ensure
-
         assert_tools(tools)
         prompt = with_documents(prompt, documents)
-        self.ensure_ready()
-        binary = self._binary or _ensure()
-        if self._server is None:
-            self._server = HelperServer(binary, timeout=_CALL_TIMEOUT)
         envelope = {
             "op": "stream",
             "instructions": system or "",
@@ -349,15 +405,7 @@ class DeviceClient:
             "guardrails": guardrails if guardrails is not None else self._guardrails,
             "sampling": sampling,
         }
-        raw = self._server.stream(json.dumps(envelope), on_delta)
-        try:
-            response = json.loads(raw)
-        except ValueError as err:
-            raise AppleLLMError(
-                f"Apple helper returned an unreadable envelope: {raw[:200]}", "device"
-            ) from err
-        if response.get("ok") is not True:
-            _raise_for(response, raw)
+        response = self._exchange(envelope, on_delta, stream=True)
         if not isinstance(response.get("content"), str):
             raise AppleLLMError("Apple helper returned no content.", "device")
         return response["content"]
@@ -424,12 +472,15 @@ class DeviceClient:
     def json(self, prompt: str, *, schema: JsonSchema, **kwargs: Any) -> Any:
         content = self.complete(prompt, schema=to_apple_schema(schema), **kwargs)
         try:
-            return json.loads(content)
+            value = json.loads(content)
         except ValueError as err:
             # Constrained decoding should make this unreachable.
             raise AppleLLMError(
                 f"Apple on-device model returned invalid JSON: {content[:200]}", "device"
             ) from err
+        # Apple's dialect has no null, so a required-but-nullable key came back
+        # missing; put the null back, as the schema (and pydantic) expects.
+        return restore_nulls(value, schema)
 
     def close(self) -> None:
         """Shut the helper process down. Safe to call more than once."""

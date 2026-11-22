@@ -106,6 +106,12 @@ class CancelledError(AppleLLMError):
     """A request was cancelled: ``ListenSession.cancel()``, or Ctrl-C during a speech call."""
 
 
+class ModelBusyError(AppleLLMError):
+    """Apple's model manager turned the request away because other processes are
+    using the model (ModelManagerError 1042). Already retried with backoff before
+    this is raised; retrying later usually works."""
+
+
 def unavailable_message(reason: Optional[str]) -> str:
     """Turn an unavailability reason into something the user can act on."""
     base = "Apple's on-device model is not available"

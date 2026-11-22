@@ -50,7 +50,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
+from urllib.parse import unquote
 
 JsonSchema = dict[str, Any]
 
@@ -343,3 +344,82 @@ def to_apple_schema(schema: JsonSchema, root_name: str = "Response") -> JsonSche
     # `$schema` names the draft, which Apple's decoder has no use for.
     rest = {k: v for k, v in schema.items() if k != "$schema"}
     return _convert_node(rest, root_name, ctx)[0]
+
+
+def _allows_null(schema: Any) -> bool:
+    """Does this (sub)schema admit ``null``?"""
+    if not isinstance(schema, dict):
+        return False
+    kind = schema.get("type")
+    if kind == "null" or schema.get("nullable") is True:
+        return True
+    if isinstance(kind, list) and "null" in kind:
+        return True
+    enum = schema.get("enum")
+    if isinstance(enum, list) and None in enum:
+        return True
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list) and any(_allows_null(branch) for branch in branches):
+            return True
+    return False
+
+
+def _resolve_ref(ref: str, root: Any) -> Optional[dict]:
+    match = re.match(r"^#/(\$defs|definitions)/(.+)$", ref)
+    if match is None:
+        return root if ref == "#" and isinstance(root, dict) else None
+    defs = root.get(match.group(1)) if isinstance(root, dict) else None
+    target = defs.get(unquote(match.group(2))) if isinstance(defs, dict) else None
+    return target if isinstance(target, dict) else None
+
+
+def restore_nulls(value: Any, schema: Any, root: Any = None, depth: int = 0) -> Any:
+    """Put back the ``None``s Apple's dialect took away.
+
+    Apple has no union types, so a property that is required-but-nullable --
+    pydantic's ``nickname: Optional[str]`` with no default -- is rewritten as
+    simply not required, and the model then omits it rather than writing
+    ``null``. The original schema still says the key must be present, so pydantic
+    rejected the reply with "Field required". This walks the *original* schema
+    and fills each such missing key with ``None``. It never overwrites a value
+    the model produced. The Node package does the same.
+    """
+    if root is None:
+        root = schema
+    if depth > 32 or not isinstance(schema, dict):
+        return value
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = _resolve_ref(ref, root)
+        return value if target is None else restore_nulls(value, target, root, depth + 1)
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list):
+            # Only the unambiguous case: one non-null branch (pydantic's Optional[Model]).
+            non_null = [b for b in branches if not (isinstance(b, dict) and b.get("type") == "null")]
+            if len(non_null) == 1 and isinstance(non_null[0], dict):
+                return restore_nulls(value, non_null[0], root, depth + 1)
+            return value
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list) and len(all_of) == 1 and isinstance(all_of[0], dict):
+        return restore_nulls(value, all_of[0], root, depth + 1)
+    if isinstance(value, list):
+        items = schema.get("items")
+        if not isinstance(items, dict):
+            return value
+        return [restore_nulls(item, items, root, depth + 1) for item in value]
+    properties = schema.get("properties")
+    if not isinstance(value, dict) or not isinstance(properties, dict):
+        return value
+    required = schema.get("required")
+    required = required if isinstance(required, list) else []
+    out = dict(value)
+    for key, child in properties.items():
+        if key not in out:
+            if key in required and _allows_null(child):
+                out[key] = None
+            continue
+        if isinstance(child, dict):
+            out[key] = restore_nulls(out[key], child, root, depth + 1)
+    return out

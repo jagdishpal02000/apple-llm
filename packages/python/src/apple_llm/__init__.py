@@ -54,6 +54,7 @@ from ._errors import (
     AppleLLMError,
     CancelledError,
     ContextLengthError,
+    ModelBusyError,
     ModelUnavailableError,
     PermissionDeniedError,
     QuotaError,
@@ -65,7 +66,7 @@ from ._errors import (
     UnsupportedError,
 )
 from ._json_recovery import extract_json_span, parse_llm_json, strip_code_fences
-from ._schema import JsonSchema, to_apple_schema
+from ._schema import JsonSchema, restore_nulls, to_apple_schema
 from ._speech import (
     AppleSpeech,
     AsyncAppleSpeech,
@@ -120,6 +121,7 @@ __all__ = [
     "cloud_json_instruction",
     "cloud_setup_hint",
     "to_apple_schema",
+    "restore_nulls",
     "parse_llm_json",
     "strip_code_fences",
     "extract_json_span",
@@ -135,6 +137,7 @@ __all__ = [
     "with_documents",
     "AppleLLMError",
     "ModelUnavailableError",
+    "ModelBusyError",
     "SchemaRejectedError",
     "SchemaValidationError",
     "ContextLengthError",
@@ -651,6 +654,14 @@ class AsyncAppleLLM:
     async def reset_session(self, session_id: Optional[str] = None) -> None:
         async with self._lock:
             await asyncio.to_thread(lambda: self._inner.reset_session(session_id))
+
+    async def count_tokens(self, prompt: str, **kwargs: Any) -> dict[str, int]:
+        async with self._lock:
+            return await asyncio.to_thread(lambda: self._inner.count_tokens(prompt, **kwargs))
+
+    async def prewarm(self, system: Optional[str] = None) -> None:
+        async with self._lock:
+            await asyncio.to_thread(lambda: self._inner.prewarm(system))
 
     def conversation(self, session_id: str, system: Optional[str] = None) -> "AsyncConversation":
         return AsyncConversation(self, session_id, system)
