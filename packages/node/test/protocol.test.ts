@@ -92,6 +92,35 @@ describe('HelperServer', () => {
     server.stop();
   });
 
+  it('keeps a multi-byte character that a chunk boundary splits', async () => {
+    // A reply past the pipe's 64 KB, such as a long transcript, arrives in
+    // pieces cut at any byte. Decoding each piece alone turned the halves of
+    // "é" into two U+FFFD.
+    const text = 'café — 東京 👋';
+    const { server } = serverWith((_line, child) => {
+      const bytes = Buffer.from(`${JSON.stringify({ ok: true, content: text })}\n`, 'utf8');
+      // Cut inside a 2-, a 3- and a 4-byte character.
+      const inside = (char: string, after: number): number => bytes.indexOf(Buffer.from(char)) + after;
+      let from = 0;
+      for (const cut of [inside('é', 1), inside('東', 2), inside('👋', 3), bytes.length]) {
+        child.stdout.write(bytes.subarray(from, cut));
+        from = cut;
+      }
+    });
+    const raw = await server.send('{}');
+    expect((JSON.parse(raw) as { content: string }).content).toBe(text);
+    server.stop();
+  });
+
+  it('names the signal when the helper is killed rather than exiting', async () => {
+    const { server } = serverWith((_line, child) => {
+      child.exitCode = null;
+      child.emit('close', null, 'SIGSEGV');
+    });
+    await expect(server.send('{}')).rejects.toThrow(/killed by SIGSEGV/);
+    server.stop();
+  });
+
   it('skips blank lines and trailing partials in a chunk', async () => {
     // Only one request is ever outstanding — `send` chains — so two *paired*
     // responses cannot arrive together. What can share a chunk is a blank line,

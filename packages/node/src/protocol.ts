@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { AbortError, AppleLLMError, TimeoutError } from './errors.js';
 
 /** How a child is created. Injectable so tests can script stdout without Apple hardware. */
@@ -108,8 +109,14 @@ export class HelperServer {
     this.buffer = '';
     this.stderrTail = '';
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      this.buffer += chunk.toString();
+    // A pipe hands over bytes in chunks that need not end on a character: a
+    // long transcript, or any reply past the pipe's 64 KB, arrives in pieces.
+    // Decoding each chunk on its own turned a character split across two of
+    // them into two U+FFFD; the decoder holds the partial bytes back instead.
+    const stdout = new StringDecoder('utf8');
+    const stderr = new StringDecoder('utf8');
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      this.buffer += typeof chunk === 'string' ? chunk : stdout.write(chunk);
       for (;;) {
         const newline = this.buffer.indexOf('\n');
         if (newline === -1) break;
@@ -118,8 +125,9 @@ export class HelperServer {
         if (line !== '') this.dispatch(line);
       }
     });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-2000);
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : stderr.write(chunk);
+      this.stderrTail = (this.stderrTail + text).slice(-2000);
     });
 
     const fail = (err: Error): void => {
@@ -132,9 +140,11 @@ export class HelperServer {
       }
     };
     child.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       const tail = this.stderrTail.trim();
-      fail(new AppleLLMError(`Apple helper exited with code ${code}${tail ? `: ${tail.slice(-400)}` : ''}`, 'device'));
+      // A crash has no exit code, only the signal that ended it.
+      const how = code === null && signal ? `was killed by ${signal}` : `exited with code ${code}`;
+      fail(new AppleLLMError(`Apple helper ${how}${tail ? `: ${tail.slice(-400)}` : ''}`, 'device'));
     });
     child.stdin?.on('error', () => {
       /* close/error handlers report the real failure */
