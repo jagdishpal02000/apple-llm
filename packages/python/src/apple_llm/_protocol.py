@@ -14,7 +14,10 @@ sequentially, so concurrency > 1 buys precisely nothing.
 from __future__ import annotations
 
 import atexit
+import collections
+import json
 import queue
+import signal
 import subprocess
 import threading
 import weakref
@@ -26,6 +29,9 @@ from ._errors import TimeoutError as AppleTimeoutError
 #: Every live server, so a wedged helper never outlives the interpreter. The
 #: Node side does this with `process.once('exit', ...)`.
 _live: "weakref.WeakSet[HelperServer]" = weakref.WeakSet()
+
+#: How long a cancelled request may take to say so before the helper is stopped.
+_CANCEL_GRACE = 5.0
 
 
 @atexit.register
@@ -44,6 +50,9 @@ class HelperServer:
         self._process: Optional[subprocess.Popen[str]] = None
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
         self._reader: Optional[threading.Thread] = None
+        #: The helper's last stderr lines, quoted when it dies.
+        self._stderr: "collections.deque[str]" = collections.deque(maxlen=20)
+        self._stderr_reader: Optional[threading.Thread] = None
         #: Serialises callers so one request's reply cannot be handed to another.
         self._lock = threading.Lock()
         #: Control lines arrive from other threads while a request holds _lock.
@@ -61,12 +70,16 @@ class HelperServer:
         # Swap in a fresh queue so an old reader thread's trailing None goes
         # to the old queue instead of poisoning the new child's replies.
         self._lines = queue.Queue()
+        self._stderr = collections.deque(maxlen=20)
         process = subprocess.Popen(  # noqa: S603 - path comes from our own cache
             [self._binary, "--serve"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            # The helper speaks UTF-8 whatever the locale says. Left to
+            # text=True, a non-UTF-8 locale would misread every non-ASCII reply.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._process = process
@@ -77,47 +90,58 @@ class HelperServer:
                     stripped = line.strip()
                     if stripped:
                         sink.put(stripped)
+            except (OSError, ValueError):
+                pass
             finally:
                 # None marks "the child is gone", so a waiting caller is told
                 # rather than sitting until its timeout.
                 sink.put(None)
 
-        self._reader = threading.Thread(
-            target=pump, args=(process.stdout, self._lines), daemon=True
-        )
+        def drain(stream, tail: "collections.deque[str]") -> None:
+            # Always read: a pipe nobody reads fills at 64 KB and then blocks
+            # the helper mid-write, which looks exactly like a hang.
+            try:
+                for line in stream:
+                    if line.strip():
+                        tail.append(line.rstrip("\n"))
+            except (OSError, ValueError):
+                pass
+
+        self._reader = threading.Thread(target=pump, args=(process.stdout, self._lines), daemon=True)
         self._reader.start()
+        self._stderr_reader = threading.Thread(target=drain, args=(process.stderr, self._stderr), daemon=True)
+        self._stderr_reader.start()
         return process
 
-    def send(self, payload: str) -> str:
-        with self._lock:
-            process = self._start()
+    def _exited(self, process: subprocess.Popen[str]) -> AppleLLMError:
+        """The error for a helper that stopped answering, with its last words."""
+        try:
+            code: Optional[int] = process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            code = process.poll()
+        reader = self._stderr_reader
+        if reader is not None:
+            reader.join(timeout=0.5)
+        tail = "\n".join(self._stderr).strip()
+        self.stop()
+        if code is not None and code < 0:
             try:
-                assert process.stdin is not None
-                # json.dumps escapes newlines inside strings, so this only guards
-                # against a caller handing us a payload with a literal one.
-                process.stdin.write(payload.replace("\n", " ") + "\n")
-                process.stdin.flush()
-            except (BrokenPipeError, ValueError) as err:
-                self.stop()
-                raise AppleLLMError(f"Apple helper is not accepting input: {err}", "device") from err
+                how = f"was killed by {signal.Signals(-code).name}"
+            except ValueError:
+                how = f"was killed by signal {-code}"
+        else:
+            how = f"exited with code {code}"
+        return AppleLLMError(f"Apple helper {how}{': ' + tail[-400:] if tail else ''}", "device")
 
-            try:
-                line = self._lines.get(timeout=self._timeout)
-            except queue.Empty:
-                # A wedged helper cannot be trusted to stay in sync; drop it so
-                # the next request starts from a clean process rather than
-                # reading a reply that belongs to the request that timed out.
-                self.stop()
-                raise AppleTimeoutError(
-                    f"Apple on-device generation timed out after {self._timeout:g}s.", "device"
-                ) from None
-            if line is None:
-                code = process.poll()
-                self.stop()
-                raise AppleLLMError(f"Apple helper exited with code {code}", "device")
-            return line
+    def send(self, payload: str, request_id: Optional[str] = None) -> str:
+        """One request; returns its reply line.
 
-    def stream(self, payload: str, on_delta=None) -> str:
+        Ctrl-C cancels the request in the helper and waits for the helper to say
+        so, so its reply can never be handed to the next request instead.
+        """
+        return self.exchange(payload, request_id=request_id)
+
+    def stream(self, payload: str, on_delta=None, request_id: Optional[str] = None) -> str:
         """Streaming request.
 
         The helper emits N delta lines plus a final done:true line; each delta
@@ -125,60 +149,36 @@ class HelperServer:
         final line. Holds the server lock for the whole stream, so a stream
         never interleaves with another request -- same guarantee as ``send``.
         """
-        import json as _json
 
-        with self._lock:
-            process = self._start()
-            try:
-                assert process.stdin is not None
-                process.stdin.write(payload.replace("\n", " ") + "\n")
-                process.stdin.flush()
-            except (BrokenPipeError, ValueError) as err:
-                self.stop()
-                raise AppleLLMError(f"Apple helper is not accepting input: {err}", "device") from err
+        def on_event(event: dict) -> None:
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta and on_delta is not None:
+                on_delta(delta)
 
-            for _ in range(10_000):  # bound: a stream is many lines, not infinite
-                try:
-                    line = self._lines.get(timeout=self._timeout)
-                except queue.Empty:
-                    self.stop()
-                    raise AppleTimeoutError(
-                        f"Apple on-device generation timed out after {self._timeout:g}s.",
-                        "device",
-                    ) from None
-                if line is None:
-                    code = process.poll()
-                    self.stop()
-                    raise AppleLLMError(f"Apple helper exited with code {code}", "device")
-                try:
-                    parsed = _json.loads(line)
-                except ValueError:
-                    return line  # not JSON: let the caller classify it
-                if isinstance(parsed, dict) and parsed.get("ok") is True and not parsed.get("done"):
-                    delta = parsed.get("delta")
-                    if isinstance(delta, str) and delta and on_delta is not None:
-                        try:
-                            on_delta(delta)
-                        except Exception:  # noqa: BLE001 - a bad callback must not break the stream
-                            pass
-                    continue
-                return line
-            self.stop()
-            raise AppleLLMError("Apple helper stream did not terminate.", "device")
+        return self.exchange(payload, on_event=on_event, request_id=request_id)
 
     def write(self, control: dict) -> None:
         """Send a control line (endInput, cancel) for the request in flight."""
-        import json as _json
-
         process = self._process
         if process is None or process.poll() is not None or process.stdin is None:
             return
         try:
             with self._write_lock:
-                process.stdin.write(_json.dumps(control) + "\n")
+                process.stdin.write(json.dumps(control) + "\n")
                 process.stdin.flush()
         except (BrokenPipeError, ValueError):
             pass  # The reader reports the real failure.
+
+    def _interrupted(
+        self, err: KeyboardInterrupt, already: Optional[KeyboardInterrupt], request_id: Optional[str]
+    ) -> KeyboardInterrupt:
+        """A Ctrl-C mid-request: ask the helper to stop, and keep reading until it
+        says it has. A second Ctrl-C gives up on the helper altogether."""
+        if already is not None:
+            self.stop()
+            raise err
+        self.write({"op": "cancel", "id": request_id} if request_id else {"op": "cancel"})
+        return err
 
     def exchange(
         self,
@@ -195,13 +195,13 @@ class HelperServer:
         otherwise it would go on talking, and the reply would be handed to
         whichever request came next.
         """
-        import json as _json
-
         with self._lock:
             process = self._start()
             try:
                 assert process.stdin is not None
                 with self._write_lock:
+                    # json.dumps escapes newlines inside strings, so this only
+                    # guards against a caller handing us a literal one.
                     process.stdin.write(payload.replace("\n", " ") + "\n")
                     process.stdin.flush()
             except (BrokenPipeError, ValueError) as err:
@@ -211,8 +211,11 @@ class HelperServer:
             interrupted: Optional[KeyboardInterrupt] = None
             while True:
                 try:
-                    line = self._lines.get(timeout=self._timeout if interrupted is None else 5.0)
+                    line = self._lines.get(timeout=self._timeout if interrupted is None else _CANCEL_GRACE)
                 except queue.Empty:
+                    # A wedged helper cannot be trusted to stay in sync; drop it
+                    # so the next request starts from a clean process rather
+                    # than reading a reply that belongs to this one.
                     self.stop()
                     if interrupted is not None:
                         raise interrupted from None
@@ -220,24 +223,21 @@ class HelperServer:
                         f"Apple helper timed out after {self._timeout:g}s of silence.", "device"
                     ) from None
                 except KeyboardInterrupt as err:
-                    if interrupted is not None:
-                        self.stop()
-                        raise
-                    interrupted = err
-                    self.write({"op": "cancel", "id": request_id} if request_id else {"op": "cancel"})
+                    interrupted = self._interrupted(err, interrupted, request_id)
                     continue
                 if line is None:
-                    code = process.poll()
-                    self.stop()
-                    raise AppleLLMError(f"Apple helper exited with code {code}", "device")
+                    raise self._exited(process)
                 try:
-                    parsed = _json.loads(line)
+                    parsed = json.loads(line)
                 except ValueError:
                     return line  # not JSON: let the caller classify it
                 if isinstance(parsed, dict) and parsed.get("done") is False:
                     if on_event is not None and interrupted is None:
                         try:
                             on_event(parsed)
+                        except KeyboardInterrupt as err:
+                            # Most likely in a callback that prints each delta.
+                            interrupted = self._interrupted(err, None, request_id)
                         except Exception:  # noqa: BLE001 - a bad callback must not break the framing
                             pass
                     continue

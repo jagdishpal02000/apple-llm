@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apple-llm"
-version = "0.3.0"
+version = "0.3.1"
 description = "Free local LLM on your Mac: Apple Intelligence's on-device Foundation Models and Private Cloud Compute from Python, plus text to speech and speech to text in macOS's own voices and recognition. Guaranteed JSON (pydantic), streaming, sessions. No API key, no account."
 readme = "README.md"
 license = { text = "MIT" }
@@ -58,7 +58,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The Swift helper ships as package data and is compiled on first use, never at
 # install time. It must stay byte-identical to swift/helper.swift at the repo
-# root; tests/test_drift.py asserts that. py.typed marks the package as typed
+# root; tests/test_unit.py asserts that. py.typed marks the package as typed
 # (PEP 561), so mypy and pyright read its annotations.
 apple_llm = ["swift/*.swift", "py.typed"]
 

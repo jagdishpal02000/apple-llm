@@ -25,6 +25,8 @@ from apple_llm import (
     target_triple_from,
     with_documents,
 )
+from apple_llm._compile import compiler_errors
+from apple_llm._target import deployment_version
 
 
 class TestShortcutDefinition:
@@ -88,6 +90,45 @@ class TestTargetTriple:
     def test_returns_none_for_unusable_output(self):
         assert target_triple_from("", "arm64") is None
         assert target_triple_from("not-a-version", "arm64") is None
+
+
+class TestDeploymentVersion:
+    # The Node package has the same cases; both must agree on one cache key.
+    def test_builds_for_the_running_os_when_the_sdk_is_newer(self):
+        assert deployment_version("27.0", "26.4.1") == "26.4"
+
+    def test_builds_for_the_sdk_when_the_os_is_newer(self):
+        assert deployment_version("26.5", "27.2") == "26.5"
+
+    def test_keeps_the_sdk_version_within_one_major(self):
+        assert deployment_version("27.0", "27.2") == "27.0"
+        assert deployment_version("27.2", "27.0") == "27.0"
+
+    def test_compares_versions_as_numbers(self):
+        assert deployment_version("26.10", "26.9") == "26.9"
+
+    def test_uses_whichever_is_known(self):
+        assert deployment_version(None, "26.3") == "26.3"
+        assert deployment_version("27.0\n", None) == "27.0"
+        assert deployment_version("garbage", "26.1") == "26.1"
+        assert deployment_version(None, None) is None
+
+
+class TestCompilerErrors:
+    def test_keeps_the_error_lines_and_drops_the_warnings(self):
+        output = "\n".join([
+            "helper.swift:1577:26: warning: 'NSSpeechSynthesizer' was deprecated in macOS 14.0",
+            "helper.swift:936:52: error: 'Usage' is not a member type of class 'FoundationModels.LanguageModelSession'",
+            "helper.swift:648:35: error: cannot find type 'LanguageModelError' in scope",
+            "helper.swift:648:35: error: cannot find type 'LanguageModelError' in scope",
+        ])
+        assert compiler_errors(output) == (
+            "helper.swift:936:52: error: 'Usage' is not a member type of class 'FoundationModels.LanguageModelSession'\n"
+            "helper.swift:648:35: error: cannot find type 'LanguageModelError' in scope"
+        )
+
+    def test_falls_back_to_the_tail(self):
+        assert compiler_errors("ld: something else went wrong\n") == "ld: something else went wrong"
 
 
 class TestFingerprint:

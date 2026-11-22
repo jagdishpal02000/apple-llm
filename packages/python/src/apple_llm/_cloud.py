@@ -39,7 +39,7 @@ from ._errors import (
 )
 from ._errors import TimeoutError as AppleTimeoutError
 from ._json_recovery import parse_llm_json
-from ._schema import JsonSchema
+from ._schema import JsonSchema, restore_nulls
 from ._target import is_apple_silicon_mac
 
 #: Distinctive, so ``shortcuts run`` cannot match a shortcut the user wrote.
@@ -431,7 +431,7 @@ class CloudClient:
         instruction = cloud_json_instruction(schema)
         reply = self.text(f"{prompt}\n\n{instruction}", system=system, **kwargs)
         try:
-            return parse_llm_json(reply)
+            return restore_nulls(parse_llm_json(reply), schema)
         except ValueError:
             pass
         previous = reply if len(reply) <= 2000 else f"{reply[:2000]}..."
@@ -442,7 +442,7 @@ class CloudClient:
         )
         reply = self.text(repair, system=system, **kwargs)
         try:
-            return parse_llm_json(reply)
+            return restore_nulls(parse_llm_json(reply), schema)
         except ValueError:
             raise SchemaValidationError(
                 f"The cloud model did not reply with valid JSON: {reply[:200]}", reply, "cloud"

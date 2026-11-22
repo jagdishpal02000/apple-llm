@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { ModelUnavailableError } from './errors.js';
-import { findSwiftc, hostTarget } from './target.js';
+import { findSwiftc, hostTarget, sdkVersion } from './target.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -15,6 +15,12 @@ export interface Progress {
   percent?: number;
 }
 export type OnProgress = (p: Progress) => void;
+
+/** Where to report a helper that will not build. */
+const ISSUES_URL = 'https://github.com/jagdishpal02000/apple-llm/issues';
+
+/** How often a build that is still running says so. A cold first build takes about a minute. */
+const BUILD_HEARTBEAT_MS = 15_000;
 
 /**
  * Where the compiled helper is cached.
@@ -33,7 +39,8 @@ export function cacheDir(): string {
  *
  * The exact recipe is load-bearing — the Python package computes the same string
  * and must agree byte for byte, or the two would each compile their own copy.
- * A helper edit or an OS upgrade changes it, so both rebuild automatically.
+ * A helper edit, an OS upgrade or a new SDK changes it, so both rebuild
+ * automatically.
  */
 export function fingerprint(source: string, triple: string): string {
   return createHash('sha256').update(`${source}\n${triple}`, 'utf8').digest('hex').slice(0, 12);
@@ -72,6 +79,22 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+/** What a build is made from, and the cache key that names its result. */
+interface BuildInputs {
+  source: string;
+  triple: string;
+  key: string;
+}
+
+async function buildInputs(): Promise<BuildInputs> {
+  const source = await helperSource();
+  // Empty when neither the SDK nor the OS version can be read, exactly as the
+  // Python package does, so the two still agree on the key. No -target is
+  // passed then.
+  const triple = (await hostTarget()) ?? '';
+  return { source, triple, key: fingerprint(source, triple) };
+}
+
 let inFlight: Promise<string> | undefined;
 let cachedKey: string | undefined;
 
@@ -82,8 +105,10 @@ let cachedKey: string | undefined;
  * `force` bypasses the in-process memo, so a caller can rebuild after the cached
  * binary is removed or found corrupt without restarting the program.
  *
- * The memo is fingerprint-aware: a helper edit or OS upgrade changes the
- * fingerprint, so a stale in-process memo is discarded rather than reused.
+ * The memo is fingerprint-aware: a helper edit, OS upgrade or new SDK changes
+ * the fingerprint, so a stale in-process memo is discarded rather than reused.
+ * Concurrent first calls share one build: a cold one takes about a minute, and
+ * two at once would only slow each other down.
  */
 export async function ensureBinary(
   onProgress?: OnProgress,
@@ -95,39 +120,54 @@ export async function ensureBinary(
   } else if (inFlight !== undefined && cachedKey !== undefined) {
     const pending = inFlight;
     try {
-      const source = await helperSource();
-      const triple = (await hostTarget()) ?? process.arch;
-      if (fingerprint(source, triple) === cachedKey) return pending;
-      // Fingerprint changed (helper edited or OS upgraded): fall through
-      // and rebuild rather than reuse the stale binary.
-      inFlight = undefined;
-      cachedKey = undefined;
+      if ((await buildInputs()).key === cachedKey) return pending;
+      // Fingerprint changed (helper edited, OS upgraded or SDK updated): fall
+      // through and rebuild rather than reuse the stale binary.
+      if (inFlight === pending) {
+        inFlight = undefined;
+        cachedKey = undefined;
+      }
     } catch {
       return pending;
     }
   }
   if (inFlight === undefined) {
-    try {
-      const source = await helperSource();
-      const triple = (await hostTarget()) ?? process.arch;
-      cachedKey = fingerprint(source, triple);
-    } catch {
-      // Fingerprint is best effort; build() recomputes it anyway.
-    }
-    inFlight = build(onProgress).catch((err) => {
-      inFlight = undefined;
-      cachedKey = undefined;
-      throw err;
+    // Claimed before the first await, so a second caller arriving meanwhile
+    // waits for this build instead of starting its own.
+    let attempt!: Promise<string>;
+    attempt = (async () => {
+      const inputs = await buildInputs();
+      if (inFlight === attempt) cachedKey = inputs.key;
+      return build(inputs, onProgress);
+    })();
+    inFlight = attempt;
+    attempt.catch(() => {
+      if (inFlight === attempt) {
+        inFlight = undefined;
+        cachedKey = undefined;
+      }
     });
   }
   return inFlight;
 }
 
-async function build(onProgress?: OnProgress): Promise<string> {
-  const source = await helperSource();
-  const triple = (await hostTarget()) ?? process.arch;
+/**
+ * The compiler's `error:` lines, which say what went wrong. swiftc's full
+ * output leads with the command line and dozens of deprecation warnings, so a
+ * fixed-length prefix of it usually cut off before the first error.
+ */
+export function compilerErrors(output: string): string {
+  const errors = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /(^|\s)error: /.test(line));
+  if (errors.length > 0) return [...new Set(errors)].slice(0, 6).join('\n');
+  return output.trim().slice(-600);
+}
+
+async function build({ source, triple, key }: BuildInputs, onProgress?: OnProgress): Promise<string> {
   const dir = cacheDir();
-  const target = path.join(dir, `fm-helper-${fingerprint(source, triple)}`);
+  const target = path.join(dir, `fm-helper-${key}`);
 
   if (await fileExists(target)) return target;
 
@@ -141,27 +181,32 @@ async function build(onProgress?: OnProgress): Promise<string> {
     );
   }
 
-  onProgress?.({ status: 'building the Apple on-device helper (one time, a few seconds)' });
   await mkdir(dir, { recursive: true });
   // Random suffix: same-PID concurrent force:true builds must not collide on
   // one shared temp name.
   const unique = `${process.pid}.${Math.random().toString(36).slice(2)}`;
   const sourcePath = `${target}.${unique}.swift`;
   const staging = `${target}.${unique}.tmp`;
-  const { writeFile } = await import('node:fs/promises');
   await writeFile(sourcePath, source, 'utf8');
+
+  // A first build takes about a minute on a cold compiler cache, and a silent
+  // minute reads as a hang. Say so up front, then keep saying it is working.
+  const started = Date.now();
+  const seconds = (): number => Math.round((Date.now() - started) / 1000);
+  onProgress?.({ status: 'building the Apple on-device helper (first run only; up to a minute)' });
+  const heartbeat = setInterval(() => {
+    onProgress?.({ status: `still building the helper (${seconds()}s)` });
+  }, BUILD_HEARTBEAT_MS);
+  heartbeat.unref();
 
   try {
     const targetArgs = triple.includes('-apple-') ? ['-target', triple] : [];
-    await execFileAsync(swiftc.command, [
-      ...swiftc.prefixArgs,
-      ...targetArgs,
-      '-parse-as-library',
-      '-O',
-      sourcePath,
-      '-o',
-      staging,
-    ]);
+    await execFileAsync(
+      swiftc.command,
+      [...swiftc.prefixArgs, ...targetArgs, '-parse-as-library', '-O', sourcePath, '-o', staging],
+      // Warnings alone run to tens of KB; never let output size fail a build.
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
     await chmod(staging, 0o755);
     // Atomic publish, so concurrent first-runs cannot observe a half-written file.
     await rename(staging, target);
@@ -169,17 +214,23 @@ async function build(onProgress?: OnProgress): Promise<string> {
     await rm(staging, { force: true });
     // A concurrent run may have finished first, which is a success for us.
     if (await fileExists(target)) return target;
-    const reason = err instanceof Error ? err.message : String(err);
+    const output = (err as { stderr?: unknown }).stderr;
+    const detail = compilerErrors(typeof output === 'string' && output !== '' ? output : String(err));
+    const sdk = await sdkVersion();
     throw new ModelUnavailableError(
-      `Failed to build the Apple on-device helper with ${swiftc.command}.\n${reason.slice(0, 400)}\n` +
-        'This usually means the macOS SDK predates the Foundation Models framework (macOS 26+).',
+      `Failed to build the Apple on-device helper with ${swiftc.command} ` +
+        `(SDK ${sdk ?? 'unknown'}, target ${triple || 'default'}).\n${detail}\n` +
+        'It needs macOS 26 or later and the Xcode Command Line Tools to match. Updating them usually fixes this: ' +
+        'System Settings › General › Software Update, or `xcode-select --install`.\n' +
+        `If it still fails, please report it, with this message, at ${ISSUES_URL}`,
       'unsupportedOSVersion',
       'device',
     );
   } finally {
+    clearInterval(heartbeat);
     await rm(sourcePath, { force: true });
   }
 
-  onProgress?.({ status: 'helper built' });
+  onProgress?.({ status: `helper built in ${seconds()}s` });
   return target;
 }

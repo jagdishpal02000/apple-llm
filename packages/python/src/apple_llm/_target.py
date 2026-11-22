@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 from typing import Optional
 
@@ -15,7 +16,7 @@ def is_apple_silicon_mac() -> bool:
 
 
 def target_triple_from(version_output: str, arch: Optional[str] = None) -> Optional[str]:
-    """Build the compile target from an SDK version string, e.g. ``27.0`` ->
+    """Build the compile target from a version string, e.g. ``27.0`` ->
     ``arm64-apple-macos27.0``.
 
     swiftc's own default triple carries a patch component
@@ -57,16 +58,47 @@ def macos_major() -> Optional[int]:
     return int(head) if head.isdigit() else None
 
 
+def _version_parts(text: Optional[str]) -> Optional[tuple[int, int]]:
+    """``major.minor`` as two ints, or None when the text is not a version."""
+    if text is None:
+        return None
+    match = re.match(r"(\d+)(?:\.(\d+))?", text.strip())
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2) or 0)
+
+
+def deployment_version(sdk: Optional[str], os_version: Optional[str]) -> Optional[str]:
+    """The version to build for: the older of the SDK and the running OS.
+
+    The SDK alone is not enough. A Mac on macOS 26 can have the macOS 27 SDK, and
+    a binary built for 27 does not run on 26; a Mac on macOS 27 can still have
+    the macOS 26 SDK, which cannot target an OS it predates. The helper checks
+    every newer API at run time, so building for the older of the two is always
+    safe. Pure, so it can be tested on any machine; the Node package has the same
+    rule, and the two must agree to share one compiled helper.
+    """
+    known = [v for v in (_version_parts(sdk), _version_parts(os_version)) if v is not None]
+    if not known:
+        return None
+    major, minor = min(known)
+    return f"{major}.{minor}"
+
+
+def sdk_version() -> Optional[str]:
+    """The SDK version the Swift compiler would build against, or None."""
+    out = _run(["xcrun", "--show-sdk-version"])
+    if out is None or not out.strip():
+        return None
+    return out.strip()
+
+
 def host_target() -> Optional[str]:
-    """Ask the SDK, then the OS, for a version to build the triple from."""
-    for cmd in (["xcrun", "--show-sdk-version"], ["sw_vers", "-productVersion"]):
-        out = _run(cmd)
-        if out is None:
-            continue
-        triple = target_triple_from(out)
-        if triple is not None:
-            return triple
-    return None
+    """The compile target: the older of the SDK and the running OS (see
+    :func:`deployment_version`)."""
+    os_out = _run(["sw_vers", "-productVersion"])
+    version = deployment_version(sdk_version(), os_out.strip() if os_out else None)
+    return None if version is None else target_triple_from(version)
 
 
 def find_swiftc() -> Optional[tuple[str, list[str]]]:

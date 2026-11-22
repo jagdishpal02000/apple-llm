@@ -12,7 +12,7 @@ export function isAppleSiliconMac(): boolean {
 }
 
 /**
- * Build the compile target from an SDK version string, e.g. `27.0` ->
+ * Build the compile target from a version string, e.g. `27.0` ->
  * `arm64-apple-macos27.0`.
  *
  * swiftc's own default triple carries a patch component
@@ -42,21 +42,50 @@ export async function macosMajor(): Promise<number | null> {
   }
 }
 
-/** Ask the SDK, then the OS, for a version to build the triple from. */
-export async function hostTarget(): Promise<string | null> {
-  for (const [cmd, args] of [
-    ['xcrun', ['--show-sdk-version']],
-    ['sw_vers', ['-productVersion']],
-  ] as Array<[string, string[]]>) {
-    try {
-      const { stdout } = await execFileAsync(cmd, args);
-      const triple = targetTripleFrom(stdout);
-      if (triple !== null) return triple;
-    } catch {
-      // try the next source
-    }
+/** `major.minor` as two numbers, or null when the text is not a version. */
+function versionParts(text: string | null): [number, number] | null {
+  if (text === null) return null;
+  const match = /^(\d+)(?:\.(\d+))?/.exec(text.trim());
+  if (match === null) return null;
+  return [Number(match[1]), Number(match[2] ?? '0')];
+}
+
+/**
+ * The version to build for: the older of the SDK and the running OS.
+ *
+ * The SDK alone is not enough. A Mac on macOS 26 can have the macOS 27 SDK, and
+ * a binary built for 27 does not run on 26; a Mac on macOS 27 can still have
+ * the macOS 26 SDK, which cannot target an OS it predates. The helper checks
+ * every newer API at run time, so building for the older of the two is always
+ * safe. Pure, so it can be tested on any machine; the Python package has the
+ * same rule, and the two must agree to share one compiled helper.
+ */
+export function deploymentVersion(sdk: string | null, os: string | null): string | null {
+  const a = versionParts(sdk);
+  const b = versionParts(os);
+  const pick = a === null ? b : b === null ? a : a[0] !== b[0] ? (a[0] < b[0] ? a : b) : a[1] <= b[1] ? a : b;
+  return pick === null ? null : `${pick[0]}.${pick[1]}`;
+}
+
+async function firstLine(cmd: string, args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(cmd, args);
+    return stdout.trim() || null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+/** The SDK version the Swift compiler would build against, or null. */
+export function sdkVersion(): Promise<string | null> {
+  return firstLine('xcrun', ['--show-sdk-version']);
+}
+
+/** The compile target: the older of the SDK and the running OS (see deploymentVersion). */
+export async function hostTarget(): Promise<string | null> {
+  const [sdk, os] = await Promise.all([sdkVersion(), firstLine('sw_vers', ['-productVersion'])]);
+  const version = deploymentVersion(sdk, os);
+  return version === null ? null : targetTripleFrom(version);
 }
 
 export interface SwiftCompiler {

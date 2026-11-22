@@ -15,8 +15,8 @@ import {
 } from '../src/errors.js';
 import { assertTools, parseImageFlag, withDocuments } from '../src/device.js';
 import { extractJsonSpan, parseLlmJson, stripCodeFences } from '../src/json-recovery.js';
-import { targetTripleFrom } from '../src/target.js';
-import { fingerprint } from '../src/compile.js';
+import { deploymentVersion, targetTripleFrom } from '../src/target.js';
+import { compilerErrors, fingerprint } from '../src/compile.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..', '..');
@@ -116,6 +116,58 @@ describe('target triple derivation', () => {
   it('returns null for unusable output', () => {
     expect(targetTripleFrom('', 'arm64')).toBeNull();
     expect(targetTripleFrom('not-a-version', 'arm64')).toBeNull();
+  });
+});
+
+describe('deployment version', () => {
+  it('builds for the running OS when the SDK is newer', () => {
+    // macOS 26 with the macOS 27 Command Line Tools: a binary built for 27
+    // would not run here.
+    expect(deploymentVersion('27.0', '26.4.1')).toBe('26.4');
+  });
+
+  it('builds for the SDK when the OS is newer', () => {
+    // macOS 27 with the macOS 26 tools still installed; an SDK cannot target
+    // an OS it predates.
+    expect(deploymentVersion('26.5', '27.2')).toBe('26.5');
+  });
+
+  it('keeps the SDK version within one major, as it always has', () => {
+    // So an upgrade changes no cache key on a Mac whose SDK and OS agree.
+    expect(deploymentVersion('27.0', '27.2')).toBe('27.0');
+    expect(deploymentVersion('27.2', '27.0')).toBe('27.0');
+  });
+
+  it('compares versions as numbers, not text', () => {
+    expect(deploymentVersion('26.10', '26.9')).toBe('26.9');
+  });
+
+  it('uses whichever is known when the other is not', () => {
+    expect(deploymentVersion(null, '26.3')).toBe('26.3');
+    expect(deploymentVersion('27.0\n', null)).toBe('27.0');
+    expect(deploymentVersion('garbage', '26.1')).toBe('26.1');
+    expect(deploymentVersion(null, null)).toBeNull();
+  });
+});
+
+describe('compiler error extraction', () => {
+  it('keeps the error lines and drops the warnings around them', () => {
+    const output = [
+      'helper.swift:1577:26: warning: \'NSSpeechSynthesizer\' was deprecated in macOS 14.0',
+      '1577 |     NSSpeechSynthesizer.attributes(forVoice: voice)',
+      'helper.swift:936:52: error: \'Usage\' is not a member type of class \'FoundationModels.LanguageModelSession\'',
+      ' 936 | private func usageOf(_ usage: LanguageModelSession.Usage) -> [String: Any] {',
+      'helper.swift:648:35: error: cannot find type \'LanguageModelError\' in scope',
+      'helper.swift:648:35: error: cannot find type \'LanguageModelError\' in scope',
+    ].join('\n');
+    expect(compilerErrors(output)).toBe(
+      "helper.swift:936:52: error: 'Usage' is not a member type of class 'FoundationModels.LanguageModelSession'\n" +
+        "helper.swift:648:35: error: cannot find type 'LanguageModelError' in scope",
+    );
+  });
+
+  it('falls back to the tail of the output when no line says error', () => {
+    expect(compilerErrors('ld: something else went wrong\n')).toBe('ld: something else went wrong');
   });
 });
 
