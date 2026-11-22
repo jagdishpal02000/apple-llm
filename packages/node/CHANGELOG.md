@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- **macOS 26 could not build the helper, so nothing worked there.** The first
+  call failed with `Failed to build the Apple on-device helper … cannot find type
+  'LanguageModelError' in scope`: the helper names APIs that only the macOS 27
+  SDK declares, and `#available` is a run-time check, which cannot hide a symbol
+  from an older SDK. Every such use is now fenced at compile time too. The helper
+  builds with the macOS 26.5 SDK and the 27.0 SDK, for either OS as the target,
+  and the 26.5 build was run here through text, JSON, streaming, token counting,
+  a context overflow and speech. It has not yet been run on a Mac with macOS 26
+  installed, so reports from one are welcome. On macOS 26 you get text, JSON,
+  streaming, sessions, function tools and speech; images, the built-in tools and
+  token usage still need macOS 27.
+- **A Mac on macOS 26 with the macOS 27 Command Line Tools built a helper that
+  could not run there.** The deployment target came from the SDK alone, so the
+  binary required macOS 27. It is now the older of the SDK and the running OS.
+- **A Mac on macOS 27 with older Command Line Tools** now builds a working helper
+  instead of failing. `apple-llm probe` says the macOS 27 features are off and
+  that updating the Command Line Tools turns them on; the helper rebuilds itself.
+- **Python: after a Ctrl-C, every later call returned the previous call's
+  answer.** Interrupting `text()`, `json()` or `stream()` (in a terminal, or with
+  Jupyter's interrupt button) left the helper's reply in the queue, where the next
+  call picked it up, and the pairing stayed one behind for the life of the
+  client. Ctrl-C now cancels the request in the helper and waits for it to stop,
+  as speech calls already did.
+- **Python: a pydantic model with a required nullable field could fail
+  validation.** `shipping: Optional[Address]`, with no default, is required but
+  nullable. Apple's schema dialect has no null, so the model may leave the key
+  out, and pydantic then raised `Field required`. Missing nulls are filled back in
+  on both tiers, as the Node package already did.
+- **Node: non-ASCII text could come back with `�` in it.** A reply larger than
+  the pipe's 64 KB, such as a long transcript, arrives in pieces cut at any byte,
+  and a character split between two pieces was decoded as two replacement
+  characters.
+- **Python: a busy model was not retried.** When other processes are using the
+  model, Apple turns a request away (ModelManagerError 1042) before generating
+  anything. Node retried that and Python failed at once; Python now retries with
+  the same backoff, then raises the new `ModelBusyError`.
+- **Python: the helper's stderr was never read,** so more than 64 KB written to
+  it blocked the helper and the call timed out two minutes later. It is drained
+  now, and a crashed helper's error quotes its last lines.
+- **The first build looked like a hang.** It promised "a few seconds", then went
+  quiet; with a cold compiler cache it takes about 45 seconds on an M4 MacBook
+  Air. It now says up to a minute, reports progress every 15 seconds and says how
+  long it took. Two calls that started at once compiled two helpers side by side;
+  they now share one build.
+- A failed build shows the compiler's own error lines, the SDK version and what
+  to do. It used to show the command line and warnings, cut off before the first
+  error.
+- A helper killed by a signal is reported as such, rather than as "exited with
+  code null".
+
+### Added
+
+- `countTokens()` / `count_tokens()`, and history trimming for long
+  conversations, from **macOS 26.4**, where Apple added `tokenCount(for:)`. They
+  needed macOS 27 before.
+- `probe()` reports `features.countTokens`, the built-in tools this Mac can
+  actually run, and a `warning` when the helper was built with an SDK older than
+  the OS.
+
+### Python
+
+- `ModelBusyError`, `restore_nulls()`, and `AsyncAppleLLM.count_tokens()` and
+  `prewarm()`. The helper's `unsupported`, `timeout` and `cancelled` failures
+  raise `UnsupportedError`, `TimeoutError` and `CancelledError` rather than the
+  base class, and everything still subclasses `AppleLLMError`.
+
+The helper changed, so the first call after upgrading builds it once more.
+
 ## 0.3.0
 
 ### Fixed

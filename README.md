@@ -72,8 +72,8 @@ npx apple-llm transcribe meeting.mp4          # audio or video to text
 npx apple-llm listen                          # the microphone, live
 ```
 
-Both packages compile one small Swift helper on first use and share the compiled
-binary, so installing both costs one compile, not two.
+Both packages compile one small Swift helper on first use (up to a minute, once)
+and share the compiled binary, so installing both costs one compile, not two.
 
 ## Integrate with an AI agent
 
@@ -100,7 +100,10 @@ don't.
 
 **The Xcode Command Line Tools.** The Swift helper is compiled on first use
 with `swiftc`, which ships with them (`xcode-select --install`). Full Xcode is
-not needed.
+not needed. Any version that supports your macOS works, but on macOS 27 the
+macOS 27 features (images, built-in tools, token usage) need the macOS 27 tools:
+`apple-llm probe` tells you if yours are older, and the helper rebuilds itself
+once you update them.
 
 **The on-device model is small.** `AFM 3 Core Advanced` is roughly 20B sparse
 with 1–4B active, with an 8192-token context on macOS 27 (4096 on macOS 26). It
@@ -128,6 +131,12 @@ system voices for your personal, non-commercial use, and rules out recording or
 publishing them in a commercial context. That covers every voice, not just Siri's,
 and it is the one thing to check before building on text to speech:
 [the licence on voices](#the-licence-on-voices).
+
+**What 0.3.1 fixes.** macOS 26: the helper did not compile against the macOS 26
+SDK, so nothing worked there; it now builds against both SDKs. In Python, a
+Ctrl-C no longer leaves every later answer one call behind, and pydantic models
+with `Optional` fields no longer fail validation when the model leaves one out.
+See the [CHANGELOG](packages/node/CHANGELOG.md).
 
 **What 0.3 adds.** [Text to speech and speech to text](#speech), in both packages
 and on the server. Fixes for the two ways the cloud tier failed — Apple's
@@ -395,7 +404,8 @@ cloud (private cloud compute)
   quota       belowLimit
 ```
 
-**Count tokens before you send.** Turns a `ContextLengthError` into arithmetic:
+**Count tokens before you send** (macOS 26.4 and later). Turns a
+`ContextLengthError` into arithmetic:
 
 ```ts
 const { tokens, contextSize } = await llm.countTokens(prompt, { system });

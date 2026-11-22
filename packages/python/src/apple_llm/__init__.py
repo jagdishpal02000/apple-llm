@@ -101,7 +101,7 @@ from ._speech import (
 )
 from ._target import host_target, is_apple_silicon_mac, target_triple_from
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 T = TypeVar("T")
 

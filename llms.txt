@@ -69,8 +69,11 @@ server running on a supported Mac; `127.0.0.1` always means the caller's host.
 
 Both packages compile a small Swift helper on first use, not at install time.
 The cached binary is shared between Node and Python under
-`~/Library/Caches/apple-llm/bin/`. Allow time for the first compilation;
-`onProgress` / `on_progress` can report progress. Do not depend on `/usr/bin/fm`,
+`~/Library/Caches/apple-llm/bin/`. Allow up to a minute for the first
+compilation; `onProgress` / `on_progress` reports progress every 15 seconds.
+Any Command Line Tools that support the running macOS build the helper; on
+macOS 27, older tools build it with the macOS 27 features (images, built-in
+tools, token usage) off, and the device probe's `warning` field says so. Do not depend on `/usr/bin/fm`,
 an Ollama installation, a model download from Hugging Face, or a paid license.
 
 ## Installation and discovery
@@ -171,8 +174,8 @@ try {
 - Options include `system`, `temperature`, `maxTokens`, `timeoutMs`, `signal`,
   `images`, `documents`, `sessionId`, `tools`, `maxToolCalls`, `useCase`,
   `guardrails`, `sampling`, and cloud-only `webSearch`.
-- `llm.countTokens(input)` returns `{ tokens, contextSize }` on supported OS
-  versions. `llm.prewarm()` loads assets. Do not assume token usage is reported
+- `llm.countTokens(input)` returns `{ tokens, contextSize }` on macOS 26.4 and
+  later (`features.countTokens` in the device probe). `llm.prewarm()` loads assets. Do not assume token usage is reported
   on every tier/OS.
 
 ### Node function tools
@@ -640,10 +643,11 @@ also extend `AppleLLMError` but do not share the Node `.code` API.
 | `TimeoutError` | Surface the timeout and allow retry; explicitly import Python's error to distinguish it from the builtin |
 | `AbortError` (Node), `CancelledError` (Python) | Treat user cancellation as expected |
 | `RefusalError` | Surface the model's refusal |
-| `ToolExecutionError`, `ModelBusyError` (Node) | Inspect the tool failure or exhausted busy-model retries |
+| `ToolExecutionError` (Node), `ModelBusyError` | Inspect the tool failure or exhausted busy-model retries |
 
-Troubleshooting order: check OS/architecture, run the appropriate probe,
-verify `xcode-select --install`, check Apple Intelligence only for LLM use,
+Troubleshooting order: check OS/architecture, run the appropriate probe and
+read its `reason` and `warning`, verify `xcode-select --install` (updating the
+Command Line Tools fixes most build failures), check Apple Intelligence only for LLM use,
 list available voices/languages for speech, then reproduce with one short
 request. Do not diagnose speech failure from `/health` alone. A successful
 `/v1/models` call proves discovery works, not that a model is ready.

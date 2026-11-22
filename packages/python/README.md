@@ -185,7 +185,8 @@ calling, but **not** reasoning. The quota is real state read from
 *inference* does not block reading it — so an exhausted quota becomes an
 immediate `QuotaError` rather than a wasted Shortcuts round trip.
 
-**Count tokens before sending**, turning a `ContextLengthError` into arithmetic:
+**Count tokens before sending** (macOS 26.4 and later), turning a
+`ContextLengthError` into arithmetic:
 
 ```python
 llm.count_tokens(prompt, system=...)   # {"tokens": 64, "context_size": 8192}
@@ -255,7 +256,9 @@ cloud rate limit or quota; `.reset_date` when Apple gives one), `TimeoutError`,
 `SetupRequiredError` (including a speech language that is not installed),
 `RefusalError`, `UnsupportedError` (an unknown voice, a language macOS cannot
 recognise, an MP3 output file; also a `ValueError`), `PermissionDeniedError` (the
-microphone), `CancelledError` — all subclasses of `AppleLLMError`.
+microphone), `CancelledError` (a cancelled request), `ModelBusyError` (other
+processes kept the model busy through three retries) — all subclasses of
+`AppleLLMError`.
 
 Note `apple_llm.TimeoutError` deliberately shadows the builtin name; import it
 explicitly.
